@@ -11,9 +11,11 @@ from datareader import *
 from FoundationPose.mask import *
 import argparse
 from FoundationPose.lcm_systems.pose_publisher import PosePublisher
+from FoundationPose.lcm_systems.rgb_image_publisher import RGBImagePublisher
 # imports for reading camera extrinsics
 import yaml
 from scipy.spatial.transform import Rotation as R
+
 
 
 if __name__=='__main__':
@@ -27,6 +29,8 @@ if __name__=='__main__':
   parser.add_argument('--track_refine_iter', type=int, default=2)
   parser.add_argument('--debug', type=int, default=1)
   parser.add_argument('--debug_dir', type=str, default=f'{code_dir}/debug')
+  parser.add_argument('--pose_lcm_publish', type=bool, default=True)
+  parser.add_argument('--rgb_lcm_publish', type=bool, default=True)
   args = parser.parse_args()
 
   set_logging_format()
@@ -35,6 +39,10 @@ if __name__=='__main__':
   print("This is the mesh file: " + args.mesh_file)
   mesh = trimesh.load(args.mesh_file,force='mesh')
   print("LOADED MESH FILE")
+
+  # Save the choice to publish poses and images over LCM or not.
+  publish_pose_lcm = args.pose_lcm_publish
+  publish_rgb_lcm = args.rgb_lcm_publish
 
   debug = args.debug
   debug_dir = args.debug_dir
@@ -98,10 +106,11 @@ if __name__=='__main__':
   i = 0
   # Make sure to update this value according to the current intrinsics from the 
   # camera. ros2 topic echo /camera/aligned_depth/camera_info from host machine.
+  # TODO make sure this is true
   cam_K = np.array([[381.8276672363281, 0.0, 320.3140869140625],
                     [0.0, 381.4604187011719, 244.2602081298828],
                     [0.0, 0.0, 1.0]])
-  
+
   # read camera extrinsics from the extrinsics.yaml file
   with open('extrinsics.yaml') as file:
       data_loaded = yaml.safe_load(file)
@@ -119,7 +128,12 @@ if __name__=='__main__':
                       [rotation_matrix[2][0], rotation_matrix[2][1], rotation_matrix[2][2], cam_position_z],
                       [0, 0, 0, 1]])
 
-  ################## HERE ##################
+  # Create LCM publisher objects.
+  lcm_pose_pub = PosePublisher()
+  lcm_rgb_pub = RGBImagePublisher()
+
+
+################## HERE ##################
 Estimating = True
 time.sleep(3)
 # Streaming loop
@@ -192,9 +206,13 @@ try:
             print("pose size: ", pose.shape)
             obj_pose_in_world = world_to_cam @ cam_to_object
 
+            # Publish the object world pose and the RGB image.
             print("This is the object pose" + str(obj_pose_in_world))
-            lcm_pose = PosePublisher()
-            lcm_pose.publish_pose("Jack", obj_pose_in_world)
+            if publish_pose_lcm:
+                lcm_pose_pub.publish_pose("Jack", obj_pose_in_world)
+            if publish_rgb_lcm:
+                lcm_rgb_pub.publish_rgb_image(color_image)
+
             vis = draw_posed_3d_box(cam_K, img=color, ob_in_cam=cam_to_object, bbox=bbox)
             vis = draw_xyz_axis(color, ob_in_cam=cam_to_object, scale=0.1, K=cam_K, thickness=3, transparency=0, is_input_rgb=True)
             cv2.imshow('1', vis[...,::-1])

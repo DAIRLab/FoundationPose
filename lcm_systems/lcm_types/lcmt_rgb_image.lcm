@@ -1,0 +1,15 @@
+/*  
+  lcmtype for RGB image
+*/
+
+package lcm_rgb_image;
+
+struct lcmt_rgb_image
+{
+  int64_t utime;
+
+  int32_t width;
+  int32_t height;
+
+  byte data[height][width];
+}
