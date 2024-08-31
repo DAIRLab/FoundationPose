@@ -11,5 +11,5 @@ struct lcmt_rgb_image
   int32_t width;
   int32_t height;
 
-  byte data[height][width];
+  byte data[height][width][3];
 }

@@ -27,7 +27,8 @@ class lcmt_rgb_image(object):
     def _encode_one(self, buf):
         buf.write(struct.pack(">qii", self.utime, self.width, self.height))
         for i0 in range(self.height):
-            buf.write(bytearray(self.data[i0][:self.width]))
+            for i1 in range(self.width):
+                buf.write(bytearray(self.data[i0][i1][:3]))
 
     def decode(data):
         if hasattr(data, 'read'):
@@ -44,14 +45,16 @@ class lcmt_rgb_image(object):
         self.utime, self.width, self.height = struct.unpack(">qii", buf.read(16))
         self.data = []
         for i0 in range(self.height):
-            self.data.append(buf.read(self.width))
+            self.data.append([])
+            for i1 in range(self.width):
+                self.data[i0].append(buf.read(3))
         return self
     _decode_one = staticmethod(_decode_one)
 
     _hash = None
     def _get_hash_recursive(parents):
         if lcmt_rgb_image in parents: return 0
-        tmphash = (0xd73c6a363afc1a41) & 0xffffffffffffffff
+        tmphash = (0x363afc1a414d8907) & 0xffffffffffffffff
         tmphash  = (((tmphash<<1)&0xffffffffffffffff)  + (tmphash>>63)) & 0xffffffffffffffff
         return tmphash
     _get_hash_recursive = staticmethod(_get_hash_recursive)
