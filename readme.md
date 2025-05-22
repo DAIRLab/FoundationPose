@@ -66,10 +66,15 @@ year          = {2023},
 1) [Optional] Download our preprocessed reference views [here](https://drive.google.com/drive/folders/1PXXCOJqHXwQTbwPwPbGDN9_vLVe0XpFS?usp=sharing) in order to run model-free few-shot version.
 
 # Env setup option 1: docker (recommended)
+The below works when installing with 4090:
   ```
   cd docker/
-  docker pull wenbowen123/foundationpose && docker tag wenbowen123/foundationpose foundationpose  # Or to build from scratch: docker build --network host -t foundationpose .
+  docker pull bibitbianchini/foundationpose && docker tag bibitbianchini/foundationpose foundationpose
   bash docker/run_container.sh
+  ```
+If installing not on 4090, can replace the `docker pull` step with:
+  ```
+  docker pull wenbowen123/foundationpose && docker tag wenbowen123/foundationpose foundationpose  # Or to build from scratch: docker build --network host -t foundationpose .
   ```
 
 
