@@ -1,6 +1,7 @@
-# This pulls the pre-built? 4090 GPU docker image from the docker hub
-FROM shingarey/foundationpose_custom_cuda121:latest
-# This installs pyrealsense2
+# Pull our pre-built 4090 GPU docker image from docker hub
+FROM bibitbianchini/foundationpose:latest
+
+# Install pyrealsense2
 RUN pip install pyrealsense2
 
 ENV LCM_LIBRARY_DIR="/usr/local/lib"
@@ -10,15 +11,11 @@ RUN apt-get update && \
     apt-get install -y unzip cmake build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-# This ensures that the python path is set to the lcm-1.5.0 directory
-# ENV PYTHONPATH=/home/sharanya/workspace/foundationPose/FoundationPose/lcm-1.5.0
-
 # set default installation dir
 ENV LCM_LIBRARY_DIR="/usr/local/lib"
 
 # set default LCM_VERSION
 ENV LCM_VERSION='1.5.0'
-
 
 # Set the working directory for subsequent instructions
 WORKDIR $LCM_LIBRARY_DIR
@@ -33,4 +30,3 @@ RUN cd $LCM_LIBRARY_DIR/lcm-1.5.0/lcm-python && python setup.py install
 
 # configure pkgconfig to find LCM
 ENV PKG_CONFIG_PATH=$LCM_LIBRARY_DIR/pkgconfig
-
