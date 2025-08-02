@@ -68,7 +68,6 @@ year          = {2023},
 # Env setup option 1: docker (recommended)
 The below works when installing with 4090:
   ```
-  cd docker/
   docker pull bibitbianchini/foundationpose && docker tag bibitbianchini/foundationpose foundationpose
   bash docker/run_container.sh
   ```
