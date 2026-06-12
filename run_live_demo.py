@@ -159,9 +159,12 @@ if __name__=='__main__':
   # Get camera information.
   # Make sure to update this value according to the current intrinsics from the
   # camera. ros2 topic echo /camera/aligned_depth/camera_info from host machine.
-  cam_K = np.array([[381.8276672363281, 0.0, 320.3140869140625],
+  old_cam = np.array([[381.8276672363281, 0.0, 320.3140869140625],
                     [0.0, 381.4604187011719, 244.2602081298828],
                     [0.0, 0.0, 1.0]])
+  cam_K = np.array([[604.05114746,   0,         326.85733032],
+                    [  0,         603.39227295, 253.49771118],
+                    [  0,           0,           1,        ]])
 
   # Get camera extrinsics.
   world_to_cam, is_near = get_world_T_cam(dist_from_cam=0)
