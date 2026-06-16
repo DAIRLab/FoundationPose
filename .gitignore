@@ -99,6 +99,10 @@ docs/_build/
 # PyBuilder
 target/
 
+#libraries
+nvdiffrast/
+pytorch3d/
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
