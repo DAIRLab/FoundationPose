@@ -37,6 +37,7 @@ WORLD_ROT_MAT_RB_AGAINST_ROBOT_PLATFORM = np.array([
     [ 0.70478414,  0.00462011, -0.70940678],
     [-0.57735238, -0.57734814, -0.57735029]])
 WORLD_ROT_MAT_PUSH_T = np.eye(3)
+WORLD_ROT_MAT_CUBE = np.eye(3)
 
 DIST_CAM_TO_X_AXIS = 0.85
 CAM_CAL_SWITCH_HYSTERESIS = 0.04
@@ -52,65 +53,10 @@ def get_world_T_cam(dist_from_cam: float = None, was_near: bool = None):
     # Handle dates and changing extrinsics.
     today = datetime.date.today()
 
-    if today <= datetime.date(year=2024, month=9, day=8):
-        # read camera extrinsics from the extrinsics_thru_09_08_24.yaml file
-        with open(get_extrinsic('extrinsics_thru_09_08_24.yaml')) as file:
-            data_loaded = yaml.safe_load(file)
-        cam_position_x = data_loaded['cam0']['pose']['position']['x']
-        cam_position_y = data_loaded['cam0']['pose']['position']['y']
-        cam_position_z = data_loaded['cam0']['pose']['position']['z']
-        cam_orientation_x = data_loaded['cam0']['pose']['rotation']['x']
-        cam_orientation_y = data_loaded['cam0']['pose']['rotation']['y']
-        cam_orientation_z = data_loaded['cam0']['pose']['rotation']['z']
-
-        cam_rotation = R.from_rotvec([cam_orientation_x, cam_orientation_y, cam_orientation_z])
-        rotation_matrix = cam_rotation.as_matrix()
-        world_to_cam = np.array([
-            [rotation_matrix[0][0], rotation_matrix[0][1], rotation_matrix[0][2], cam_position_x],
-            [rotation_matrix[1][0], rotation_matrix[1][1], rotation_matrix[1][2], cam_position_y],
-            [rotation_matrix[2][0], rotation_matrix[2][1], rotation_matrix[2][2], cam_position_z],
-            [0, 0, 0, 1]])
-
-    elif today <= datetime.date(year=2024, month=12, day=16):
-        cam_to_world = np.load(
-            get_extrinsic('extrinsics_thru_12_16_24_color_tf_world.npy'))
-        world_to_cam = np.linalg.inv(cam_to_world)
-
-    elif today <= datetime.date(year=2024, month=12, day=17):
-        cam_to_world = np.load(
-            get_extrinsic('extrinsics_thru_12_17_24_color_tf_world.npy'))
-        world_to_cam = np.linalg.inv(cam_to_world)
-
-    elif today <= datetime.date(year=2024, month=12, day=19):
-        assert dist_from_cam is not None, f'Between 12/18-19/2024, we use ' + \
-            f'multiple camera calibrations for different distances from the' + \
-            f' camera -- need to provide dist_from_cam.'
-        adj = CAM_CAL_SWITCH_HYSTERESIS if was_near==True else \
-            -CAM_CAL_SWITCH_HYSTERESIS if was_near==False else 0
-        if dist_from_cam > DIST_CAM_TO_X_AXIS + adj:
-            cam_to_world = np.load(get_extrinsic(
-                'extrinsics_thru_12_19_24_far_color_tf_world.npy'))
-            is_near = False
-        else:
-            cam_to_world = np.load(get_extrinsic(
-                'extrinsics_thru_12_19_24_near_color_tf_world.npy'))
-            is_near = True
-        world_to_cam = np.linalg.inv(cam_to_world)
-
-    elif today <= datetime.date(year=2025, month=1, day=6):
-        cam_to_world = np.load(
-            get_extrinsic('extrinsics_thru_01_06_25_color_tf_world.npy'))
-        world_to_cam = np.linalg.inv(cam_to_world)
-
-    elif today <= datetime.date(year=2025, month=7, day=31):
-        cam_to_world = np.load(
-            get_extrinsic('extrinsics_thru_07_31_25_color_tf_world.npy'))
-        world_to_cam = np.linalg.inv(cam_to_world)
-
-    else:
-        cam_to_world = np.load(
-            get_extrinsic('extrinsics_starting_08_01_25_color_tf_world.npy'))
-        world_to_cam = np.linalg.inv(cam_to_world)
+    
+    cam_to_world = np.load(
+        get_extrinsic('06_16_25_color_tf_world.npy'))
+    world_to_cam = np.linalg.inv(cam_to_world)
 
     return world_to_cam, is_near
 
@@ -139,11 +85,13 @@ if __name__=='__main__':
     pass
   elif args.system == 't':
     mesh_file = f'{code_dir}/demo_data/push_t_data/mesh/push_t_bicolor.obj'
+  elif args.system == 'cube':
+    mesh_file = f'{code_dir}/demo_data/cube_data/mesh/cube.obj'
   elif args.system == None:
-    raise ValueError('Need to specify system: "jack" or "t"')
+    raise ValueError('Need to specify system: "jack" or "t" or "cube"')
   else:
     raise ValueError(f'Unknown system: {args.system} -- can only handle ' + \
-                     f'"jack" or "t"')
+                     f'"jack" or "t" or "cube"')
 
   print("This is the mesh file: " + mesh_file)
   mesh = trimesh.load(mesh_file, force='mesh')
@@ -152,8 +100,8 @@ if __name__=='__main__':
   debug = args.debug
   debug_dir = args.debug_dir
   os.system(f'rm -rf {debug_dir}/* && mkdir -p {debug_dir}/track_vis {debug_dir}/ob_in_cam')
-
-  to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
+    
+  to_origin, extents = trimesh.bounds.oriented_bounds(mesh,ordered=True)
   bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2,3)
 
   # Get camera information.

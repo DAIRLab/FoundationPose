@@ -7,9 +7,9 @@ import time
 class PosePublisher:
     def __init__(self, system_name: str):
         self.lc = lcm.LCM()
-        assert system_name in ['jack', 't']
-        self.prefix = 'capsule_1' if system_name=='jack' else 'vertical_link'
-        
+        assert system_name in ['jack', 't', 'cube']
+        self.prefix = 'capsule_1' if system_name=='jack' else 'vertical_link' if system_name=='t' else 'cube'
+
     def publish_pose(self, obj_name = "OBJECT", pose = None):
         # Instantiate the message object
         self.pose_msg = lcmt_object_state()
