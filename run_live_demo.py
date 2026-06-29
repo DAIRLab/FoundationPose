@@ -102,7 +102,7 @@ if __name__=='__main__':
   os.system(f'rm -rf {debug_dir}/* && mkdir -p {debug_dir}/track_vis {debug_dir}/ob_in_cam')
     
   to_origin, extents = trimesh.bounds.oriented_bounds(mesh,ordered=True)
-  bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2,3)
+  bbox = mesh.bounds
 
   # Get camera information.
   # Make sure to update this value according to the current intrinsics from the
