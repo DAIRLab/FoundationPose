@@ -68,7 +68,7 @@ def get_world_T_cam(dist_from_cam: float = None, was_near: bool = None):
   # inverted so downstream code can reason in world-to-camera coordinates.
     print('get_world_T_cam: loading active camera-to-world transform')
     cam_to_world = np.load(
-        get_extrinsic('07_31_25_color_tf_world.npy'))
+        get_extrinsic('color_tf_world_grace_test_1.npy'))
     world_to_cam = np.linalg.inv(cam_to_world)
     print('get_world_T_cam: transform loaded and inverted')
 
