@@ -211,16 +211,16 @@ if RECORD_RGBD_IMAGE:
     points_world = points_world[points_world[:, 2] < 0.8]
 
     # Create some points whose world locations we think we know.
-    table_xs = np.linspace(0.07855, 0.4, 50)
-    table_ys = np.linspace(-0.3, 0.3, 50)
+    table_xs = np.linspace(-0.007, 0.351, 50)
+    table_ys = np.linspace(-0.003, 0.354, 50)
     x_grid, y_grid = np.meshgrid(table_xs, table_ys)
-    table_zs = -0.0282 * np.ones_like(x_grid.ravel())
+    table_zs = 0 * np.ones_like(x_grid.ravel())
     points_table = np.column_stack((x_grid.ravel(), y_grid.ravel(), table_zs))
     
-    board_xs = np.linspace(0.07855, 0.07855+0.3, 50)
-    board_zs = np.linspace(-0.0282, -0.0282+0.4, 50)
+    board_xs = np.linspace(-0.007, 0.393, 50)
+    board_zs = np.linspace(0, 0.3, 50)
     x_grid, z_grid = np.meshgrid(board_xs, board_zs)
-    board_ys = 0.18656 * np.ones_like(x_grid.ravel())
+    board_ys = 0.497 * np.ones_like(x_grid.ravel())
     points_board = np.column_stack((x_grid.ravel(), board_ys, z_grid.ravel()))
 
     # Make a 3d plot.
