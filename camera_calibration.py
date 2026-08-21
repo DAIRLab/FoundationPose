@@ -28,9 +28,9 @@ RECORD_RGBD_IMAGE = True
 
 
 # Hard-coded world position in the board frame.
-BOARD_T_WORLD = np.array([[-1, 0, 0, 0.3542],
-                          [0, 0, 1, 0.0015],
-                          [0, 1, 0, -0.4926],
+BOARD_T_WORLD = np.array([[-1, 0, 0, 0.351],  # <-- looks like needs to be smaller
+                          [0, 0, 1, -0.015],   # <-- this should be negative
+                          [0, 1, 0, -0.497],  # <-- hard to tell from this image
                           [0, 0, 0, 1]])
 # Hard-coded point at (x = against the Franka board, y=0, and z=table height),
 # represented in world frame.
@@ -203,12 +203,12 @@ if RECORD_RGBD_IMAGE:
     points_world = points_world_h[:, :3]
 
     # Cut out the points that are too far away.
-    points_world = points_world[points_world[:, 0] > -0.4]
-    points_world = points_world[points_world[:, 0] < 1]
-    points_world = points_world[points_world[:, 1] > -0.5]
-    points_world = points_world[points_world[:, 1] < 0.5]
+    points_world = points_world[points_world[:, 0] > -0.1]
+    points_world = points_world[points_world[:, 0] < 0.5]
+    points_world = points_world[points_world[:, 1] > -0.2]
+    points_world = points_world[points_world[:, 1] < 0.6] 
     points_world = points_world[points_world[:, 2] > -0.1]
-    points_world = points_world[points_world[:, 2] < 1]
+    points_world = points_world[points_world[:, 2] < 0.8]
 
     # Create some points whose world locations we think we know.
     table_xs = np.linspace(0.07855, 0.4, 50)
