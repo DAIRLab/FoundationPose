@@ -45,8 +45,52 @@ WORLD_T_DIAMOND = np.array([[0, 0, -1, 0.280],
                             [1, 0,  0, 0.000],
                             [0, 0,  0, 1.000]])
 
+# End-condition position in the world frame. FoundationPose uses metres, so
+# convert the requested millimetre coordinates once at startup.
+END_POSITION_WORLD = np.array([70.0, 70.0, 53.22]) / 1000.0
+END_POSITION_TOLERANCE = 5.0 / 1000.0  # 1 mm per axis
+
 DIST_CAM_TO_X_AXIS = 0.85
 CAM_CAL_SWITCH_HYSTERESIS = 0.04
+
+
+def draw_world_target(image, camera_from_world, K, reached=False):
+  """Project the end-condition point and show whether it has been reached."""
+  target_world_h = np.append(END_POSITION_WORLD, 1.0)
+  target_camera = camera_from_world @ target_world_h
+  if target_camera[2] <= 0:
+    return image
+
+  target_pixel_h = K @ target_camera[:3]
+  u, v = np.rint(target_pixel_h[:2] / target_pixel_h[2]).astype(int)
+  height, width = image.shape[:2]
+  if not (0 <= u < width and 0 <= v < height):
+    return image
+
+  result = image.copy()
+  marker_color = (0, 255, 0) if reached else (255, 255, 0)
+  cv2.drawMarker(
+      result, (u, v), marker_color, markerType=cv2.MARKER_CROSS,
+      markerSize=30, thickness=3,
+  )
+  cv2.circle(result, (u, v), 12, marker_color, -1 if reached else 2)
+  cv2.putText(
+      result, 'END (70, 70, 53.22 mm)', (u + 16, v - 16),
+      cv2.FONT_HERSHEY_SIMPLEX, 0.5, marker_color, 2, cv2.LINE_AA,
+  )
+  if reached:
+    banner_text = 'TARGET REACHED'
+    (text_width, text_height), _ = cv2.getTextSize(
+        banner_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 3)
+    left = max(0, (width - text_width) // 2 - 12)
+    right = min(width - 1, left + text_width + 24)
+    cv2.rectangle(result, (left, 12), (right, 28 + text_height),
+                  (0, 255, 0), -1)
+    cv2.putText(
+        result, banner_text, (left + 12, 22 + text_height),
+        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 3, cv2.LINE_AA,
+    )
+  return result
 
 
 def render_mask_from_known_pose(estimator, camera_T_object, K, height, width):
@@ -261,6 +305,7 @@ if __name__=='__main__':
   # Estimation begins after a short delay so the camera stream can stabilize.
   Estimating = True
   keep_gui_window_open = True
+  end_condition_reached = False
   print('run_live_demo: sleeping before starting estimation loop')
   time.sleep(3)
   # Streaming loop.
@@ -343,6 +388,7 @@ if __name__=='__main__':
             0.5 * overlay[mask > 0]
             + 0.5 * np.array([255, 0, 0])
         ).astype(np.uint8)
+        overlay = draw_world_target(overlay, camera_T_world, cam_K)
         imageio.imwrite(f'{debug_dir}/automatic_mask_overlay.png', overlay)
         np.save(f'{debug_dir}/automatic_rendered_depth.npy', rendered_depth)
         print(
@@ -384,15 +430,22 @@ if __name__=='__main__':
       os.makedirs(f'{debug_dir}/ob_in_cam', exist_ok=True)
       np.savetxt(f'{debug_dir}/ob_in_cam/{i}.txt', pose.reshape(4,4))
 
+      # Convert the camera-frame estimate into the calibrated world frame.
+      world_to_cam, is_near = get_world_T_cam(
+          dist_from_cam=pose[2, 3], was_near=is_near)
+      obj_pose_in_world = world_to_cam @ pose
+
+      diamond_position_world = obj_pose_in_world[:3, 3]
+      if (not end_condition_reached and np.all(
+          np.abs(diamond_position_world - END_POSITION_WORLD)
+          <= END_POSITION_TOLERANCE
+      )):
+        print("END CONDITION REACHED")
+        end_condition_reached = True
+
       # Publish the pose over LCM.
       if args.lcm_publish > 0:
-        # Convert the tracked object pose into the world frame before
-        # publishing to downstream consumers.
         print('run_live_demo: publishing pose over LCM')
-        cam_to_object = pose
-        world_to_cam, is_near = get_world_T_cam(
-            dist_from_cam=pose[2, 3], was_near=is_near)
-        obj_pose_in_world = world_to_cam @ cam_to_object
         lcm_pose_publisher.publish_pose("Diamond", obj_pose_in_world)
         print('run_live_demo: LCM publish complete')
 
@@ -401,7 +454,10 @@ if __name__=='__main__':
         # feedback.
         print('run_live_demo: rendering debug visualization')
         vis = draw_posed_3d_box(cam_K, img=color, ob_in_cam=pose, bbox=bbox)
-        vis = draw_xyz_axis(color, ob_in_cam=pose, scale=0.1, K=cam_K, thickness=3, transparency=0, is_input_rgb=True)
+        vis = draw_xyz_axis(vis, ob_in_cam=pose, scale=0.1, K=cam_K, thickness=3, transparency=0, is_input_rgb=True)
+        camera_from_world = np.linalg.inv(world_to_cam)
+        vis = draw_world_target(
+            vis, camera_from_world, cam_K, reached=end_condition_reached)
         cv2.imshow("debug", vis[...,::-1])
         key = cv2.waitKey(1)
         print(f'run_live_demo: debug window key={key}')
@@ -427,4 +483,3 @@ if __name__=='__main__':
   finally:
     print('run_live_demo: stopping pipeline')
     pipeline.stop()
-

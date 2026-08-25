@@ -7,8 +7,19 @@ import time
 class PosePublisher:
     def __init__(self, system_name: str):
         self.lc = lcm.LCM()
-        assert system_name in ['jack', 't', 'cube', 'cone']
-        self.prefix = 'capsule_1' if system_name=='jack' else 'push_t_white' if system_name=='t' else 'cube' if system_name=='cube' else 'cone'
+        prefixes = {
+            'jack': 'capsule_1',
+            't': 'push_t_white',
+            'cube': 'cube',
+            'cone': 'cone',
+            'diamond': 'diamond',
+        }
+        if system_name not in prefixes:
+            raise ValueError(
+                f"Unknown system {system_name!r}; expected one of "
+                f"{sorted(prefixes)}"
+            )
+        self.prefix = prefixes[system_name]
 
     def publish_pose(self, obj_name = "OBJECT", pose = None):
         # Instantiate the message object
