@@ -21,30 +21,60 @@ import datetime
 import pyrealsense2 as rs
 from estimater import *
 from datareader import *
-from FoundationPose.mask import *
+from Utils import nvdiffrast_render
 import argparse
 from FoundationPose.lcm_systems.pose_publisher import PosePublisher
 # imports for reading camera extrinsics
 import yaml
 import numpy as np
 import os.path as op
+import torch
 from scipy.spatial.transform import Rotation as R
 import time
 
 
-WORLD_ROT_MAT_RB_AGAINST_ROBOT_PLATFORM = np.array([
-    [-0.4122421 ,  0.81648502, -0.40423838],
-    [ 0.70478414,  0.00462011, -0.70940678],
-    [-0.57735238, -0.57734814, -0.57735029]])
-WORLD_ROT_MAT_PUSH_T = np.eye(3)
-WORLD_ROT_MAT_CUBE = np.eye(3)
-WORLD_ROT_MAT_CONE = np.array([
-    [ 0.70710678,  0,  -0.70710678        ],
-    [ 0,    1, 0.        ],
-    [ 0.70710678,  0.        ,  0.70710678,        ]])
+CODE_DIR = op.dirname(op.abspath(__file__))
+
+
+# Fixed starting pose of the diamond's original CAD frame in world coordinates.
+# The CAD origin is at the bottom center of the diamond, measured in metres.
+# The CAD was modeled with +X pointing through the diamond's upper point, so a
+# -90-degree rotation about Y maps CAD +X onto world +Z (the vertical axis).
+WORLD_T_DIAMOND = np.array([[0, 0, -1, 0.280],
+                            [0, 1,  0, 0.250],
+                            [1, 0,  0, 0.000],
+                            [0, 0,  0, 1.000]])
 
 DIST_CAM_TO_X_AXIS = 0.85
 CAM_CAL_SWITCH_HYSTERESIS = 0.04
+
+
+def render_mask_from_known_pose(estimator, camera_T_object, K, height, width):
+  """Render the known CAD pose and return a binary silhouette mask."""
+  # FoundationPose centers the mesh internally by subtracting model_center.
+  # Compensate so camera_T_object continues to refer to the original CAD frame.
+  original_T_centered = np.eye(4, dtype=np.float32)
+  original_T_centered[:3, 3] = estimator.model_center
+  camera_T_centered = camera_T_object @ original_T_centered
+
+  pose_batch = torch.as_tensor(
+      camera_T_centered[None], dtype=torch.float32, device='cuda'
+  )
+  _, rendered_depth, _ = nvdiffrast_render(
+      K=K,
+      H=height,
+      W=width,
+      ob_in_cams=pose_batch,
+      glctx=estimator.glctx,
+      mesh_tensors=estimator.mesh_tensors,
+      output_size=(height, width),
+      get_normal=False,
+      use_light=False,
+  )
+
+  rendered_depth = rendered_depth[0].detach().cpu().numpy()
+  mask = (rendered_depth > 0).astype(np.uint8)
+  return mask, rendered_depth
 
 
 def get_extrinsic(filename):
@@ -52,7 +82,10 @@ def get_extrinsic(filename):
   # only deals with logical file names.
     print(f'get_extrinsic: resolving {filename} from extrinsics/')
     print(f'Loading {filename}')
-    return op.join('extrinsics', filename)
+    path = op.join(CODE_DIR, 'extrinsics', filename)
+    if not op.isfile(path):
+        raise FileNotFoundError(f'Calibration file not found: {path}')
+    return path
 
 def get_world_T_cam(dist_from_cam: float = None, was_near: bool = None):
   # This helper currently returns a fixed calibration, but it is the single
@@ -67,8 +100,7 @@ def get_world_T_cam(dist_from_cam: float = None, was_near: bool = None):
   # The active transform is loaded from the calibration file on disk and
   # inverted so downstream code can reason in world-to-camera coordinates.
     print('get_world_T_cam: loading active camera-to-world transform')
-    cam_to_world = np.load(
-        get_extrinsic('color_tf_world_grace_test_1.npy'))
+    cam_to_world = np.load(get_extrinsic('color_tf_world.npy'))
     world_to_cam = np.linalg.inv(cam_to_world)
     print('get_world_T_cam: transform loaded and inverted')
 
@@ -80,16 +112,11 @@ if __name__=='__main__':
   # Resolve assets relative to this file so launch location does not matter.
   code_dir = os.path.dirname(os.path.realpath(__file__))
   print(f'run_live_demo: code_dir={code_dir}')
-  # parser.add_argument('--mesh_file', type=str, default=f'{code_dir}/demo_data/mustard0/mesh/textured_simple.obj')
-  # parser.add_argument('--test_scene_dir', type=str, default=f'{code_dir}/demo_data/mustard0')
-  # parser.add_argument('--mesh_file', type=str, default=f'{code_dir}/demo_data/colored_jacktoy_data/mesh/jack_colored.obj')
-  # parser.add_argument('--test_scene_dir', type=str, default=f'{code_dir}/demo_data/colored_jacktoy_data')
   parser.add_argument('--est_refine_iter', type=int, default=5)
   parser.add_argument('--track_refine_iter', type=int, default=2)
   parser.add_argument('--debug', type=int, default=1)
   parser.add_argument('--debug_dir', type=str, default=f'{code_dir}/debug')
-  parser.add_argument('--system', type=str, default=None)
-  parser.add_argument('--hardcode_quat', type=int, default=1)
+  parser.add_argument('--system', choices=['diamond'], default='diamond')
   parser.add_argument('--lcm_publish', type=int, default=1)
   args = parser.parse_args()
   print(f'run_live_demo: parsed args={args}')
@@ -99,27 +126,12 @@ if __name__=='__main__':
   set_logging_format()
   set_seed(0)
 
-  # Select the object model based on the requested demo system.
-  mesh_file = f'{code_dir}/demo_data/colored_jacktoy_data/mesh/jack_colored.obj'
-  if args.system == 'jack':
-    print('run_live_demo: selected system jack')
-    pass
-  elif args.system == 't':
-    print('run_live_demo: selected system t')
-    mesh_file = f'{code_dir}/demo_data/push_t_data/mesh/push_t_bicolor.obj'
-  elif args.system == 'cube':
-    print('run_live_demo: selected system cube')
-    mesh_file = f'{code_dir}/demo_data/cube_data/mesh/cube.obj'
-  elif args.system == 'cone':
-    print('run_live_demo: selected system cone')
-    mesh_file = f'{code_dir}/demo_data/cone_data/cone.obj'
-  elif args.system == None:
-    raise ValueError('Need to specify system: "jack" or "t" or "cube" or "cone"')
-  else:
-    raise ValueError(f'Unknown system: {args.system} -- can only handle ' + \
-                     f'"jack" or "t" or "cube" or "cone"')
+  mesh_file = f'{code_dir}/demo_data/diamond.obj'
+  print('run_live_demo: selected system diamond')
 
   print("This is the mesh file: " + mesh_file)
+  if not op.isfile(mesh_file):
+    raise FileNotFoundError(f'Mesh file not found: {mesh_file}')
   print('run_live_demo: loading mesh')
   mesh = trimesh.load(mesh_file, force='mesh')
   print("LOADED MESH FILE")
@@ -154,37 +166,14 @@ if __name__=='__main__':
   world_to_cam, is_near = get_world_T_cam(dist_from_cam=0)
   print(f'run_live_demo: initial is_near={is_near}')
 
-  # Optional hard-coded orientation provides a stable first pose guess for
-  # the target object when the scene is initialized by hand.
-  hardcoded_initial_rot_mat = None
-  if args.hardcode_quat != 0:
-    if args.system == 'jack':
-      print('run_live_demo: computing hardcoded initial rotation for jack')
-      input('\nEnsure the blue and red capsules are touching the robot ' + \
-            'platform, with the red contact further in the world y ' + \
-            'direction.' + \
-            '\nPress enter to continue.\nNote: A GUI window will' + \
-            ' pop up to show the pose estimate.  Press \'q\' to close the ' + \
-            'window and enable faster publishing without the GUI. ')
-      hardcoded_initial_rot_mat = np.linalg.inv(world_to_cam[:3, :3]) @ \
-        WORLD_ROT_MAT_RB_AGAINST_ROBOT_PLATFORM
-    elif args.system == 't':
-      print('run_live_demo: computing hardcoded initial rotation for t')
-      input('\nEnsure the push T is flat on the table with the top of the ' + \
-            'T up against the robot platform.' + \
-            '\nPress enter to continue.\nNote: A GUI window will' + \
-            ' pop up to show the pose estimate.  Press \'q\' to close the ' + \
-            'window and enable faster publishing without the GUI. ')
-      hardcoded_initial_rot_mat = np.linalg.inv(world_to_cam[:3, :3]) @ \
-        WORLD_ROT_MAT_PUSH_T
-    elif args.system == 'cone':
-      print('run_live_demo: computing hardcoded initial rotation for cone')
-      input('\nEnsure the cone is flat on the table.' + \
-            '\nPress enter to continue.\nNote: A GUI window will' + \
-            ' pop up to show the pose estimate.  Press \'q\' to close the ' + \
-            'window and enable faster publishing without the GUI. ')
-      hardcoded_initial_rot_mat = np.linalg.inv(world_to_cam[:3, :3]) @ WORLD_ROT_MAT_CONE
-  print(f'run_live_demo: hardcoded_initial_rot_mat is None? {hardcoded_initial_rot_mat is None}')
+  # get_world_T_cam returns the inverse of the saved camera_T_world transform.
+  # Recover camera_T_world and use it to place the diamond in the camera frame.
+  camera_T_world = np.linalg.inv(world_to_cam)
+  camera_T_diamond = camera_T_world @ WORLD_T_DIAMOND
+  print(f'run_live_demo: camera_T_diamond={camera_T_diamond.tolist()}')
+
+  # The known starting pose also supplies FoundationPose's initial orientation.
+  hardcoded_initial_rot_mat = camera_T_diamond[:3, :3]
 
   print('run_live_demo: creating predictors and rasterizer context')
   scorer = ScorePredictor()
@@ -203,13 +192,6 @@ if __name__=='__main__':
   )
   logging.info("estimator initialization done")
   print('run_live_demo: estimator initialization done')
-
-  # The foreground mask is generated once and then resized to the current
-  # frame size before the initial registration step.
-  print('run_live_demo: creating foreground mask')
-  create_mask()
-  mask = cv2.imread('mask.png')
-  print(f'run_live_demo: loaded mask with shape {None if mask is None else mask.shape}')
 
   # Create a RealSense pipeline and configure color + depth streaming.
   print('run_live_demo: creating RealSense pipeline')
@@ -341,14 +323,38 @@ if __name__=='__main__':
         # The first frame uses the foreground mask and full registration to
         # bootstrap the object pose.
         print('run_live_demo: first frame registration path')
-        if len(mask.shape) == 3:
-          for c in range(3):
-            if mask[...,c].sum() > 0:
-              mask = mask[...,c]
-              print(f'run_live_demo: selected mask channel {c}')
-              break
-        mask = cv2.resize(mask, (W,H), interpolation=cv2.INTER_NEAREST).astype(bool).astype(np.uint8)
-        print(f'run_live_demo: resized mask shape={mask.shape}')
+        mask, rendered_depth = render_mask_from_known_pose(
+            estimator=est,
+            camera_T_object=camera_T_diamond,
+            K=cam_K,
+            height=H,
+            width=W,
+        )
+        mask_area = int(mask.sum())
+        if mask_area < 100:
+          raise RuntimeError(
+              f'Rendered diamond mask is empty or too small: '
+              f'{mask_area} pixels'
+          )
+
+        cv2.imwrite(f'{debug_dir}/automatic_mask.png', mask * 255)
+        overlay = color.copy()
+        overlay[mask > 0] = (
+            0.5 * overlay[mask > 0]
+            + 0.5 * np.array([255, 0, 0])
+        ).astype(np.uint8)
+        imageio.imwrite(f'{debug_dir}/automatic_mask_overlay.png', overlay)
+        np.save(f'{debug_dir}/automatic_rendered_depth.npy', rendered_depth)
+        print(
+            f'run_live_demo: rendered automatic diamond mask with '
+            f'{mask_area} pixels'
+        )
+
+        if mask.shape != depth.shape:
+          raise RuntimeError(
+              f'Mask shape {mask.shape} does not match depth shape '
+              f'{depth.shape}'
+          )
 
         pose = est.register(K=cam_K, rgb=color, depth=depth, ob_mask=mask,
                             iteration=args.est_refine_iter)
@@ -387,7 +393,7 @@ if __name__=='__main__':
         world_to_cam, is_near = get_world_T_cam(
             dist_from_cam=pose[2, 3], was_near=is_near)
         obj_pose_in_world = world_to_cam @ cam_to_object
-        lcm_pose_publisher.publish_pose("Jack", obj_pose_in_world)
+        lcm_pose_publisher.publish_pose("Diamond", obj_pose_in_world)
         print('run_live_demo: LCM publish complete')
 
       if keep_gui_window_open:
