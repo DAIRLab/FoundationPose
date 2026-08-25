@@ -28,19 +28,14 @@ RECORD_RGBD_IMAGE = True
 
 
 # Hard-coded world position in the board frame.
-BOARD_T_WORLD = np.array([[-1, 0, 0, 0.351],  # <-- looks like needs to be smaller
-                          [0, 0, 1, -0.015],   # <-- this should be negative
-                          [0, 1, 0, -0.497],  # <-- hard to tell from this image
+BOARD_T_WORLD = np.array([[-1, 0, 0, 0.351],
+                          [0, 0, 1, -0.015],
+                          [0, 1, 0, -0.497],
                           [0, 0, 0, 1]])
-# Hard-coded point at (x = against the Franka board, y=0, and z=table height),
-# represented in world frame.
-#WORLD_T_POINT = np.array([[1, 0, 0, 0.07855],
-                          #[0, 1, 0, 0],
-                          #[0, 0, 1, -0.0282],
-                          #[0, 0, 0, 1]])
-
 
 TIMESTAMP = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+FOUNDATIONPOSE_DIR = op.dirname(op.abspath(__file__))
+EXTRINSICS_DIR = op.join(FOUNDATIONPOSE_DIR, 'extrinsics')
 
 def get_filepath(filename):
     cam_cal_dir = file_utils.calibration_subdir(TIMESTAMP)
@@ -105,10 +100,6 @@ if COMPUTE_EXTRINSICS:
     B_T_W = BOARD_T_WORLD
     C_T_W = C_T_B @ B_T_W
 
-    # Add a point against the Franka platform on the table surface.
-    #W_T_P = WORLD_T_POINT
-    #C_T_P = C_T_W @ W_T_P
-
     # Debugging plot.
     image_debug_viz = cv2.drawFrameAxes(
         np_color_image_bgr,
@@ -143,7 +134,9 @@ if COMPUTE_EXTRINSICS:
     np.save(get_filepath('camera_matrix.npy'), camera_matrix)
     np.save(get_filepath('distortion_coefficients.npy'),
                          distortion_coefficients)
-    np.save(get_filepath('color_tf_world.npy'), C_T_W)
+    color_tf_world_path = op.join(EXTRINSICS_DIR, 'color_tf_world.npy')
+    np.save(color_tf_world_path, C_T_W)
+    print(f'Saved active world transform to: {color_tf_world_path}')
 
 if RECORD_RGBD_IMAGE:
     assert COMPUTE_EXTRINSICS, 'Need to compute extrinsics first!'
