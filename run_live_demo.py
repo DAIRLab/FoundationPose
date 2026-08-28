@@ -36,14 +36,14 @@ import time
 CODE_DIR = op.dirname(op.abspath(__file__))
 
 
-# Fixed starting pose of the diamond's original CAD frame in world coordinates.
-# The CAD origin is at the bottom center of the diamond, measured in metres.
-# The CAD was modeled with +X pointing through the diamond's upper point, so a
+# Fixed starting pose of the cone's original CAD frame in world coordinates.
+# The CAD origin is at the bottom center of the cone, measured in metres.
+# The CAD was modeled with +X pointing through the cone's upper point, so a
 # -90-degree rotation about Y maps CAD +X onto world +Z (the vertical axis).
-WORLD_T_DIAMOND = np.array([[0, 0, -1, 0.280],
-                            [0, 1,  0, 0.250],
-                            [1, 0,  0, 0.000],
-                            [0, 0,  0, 1.000]])
+WORLD_T_CONE = np.array([[0, 0, -1, 0.280],
+                         [0, 1,  0, 0.250],
+                         [1, 0,  0, 0.000],
+                         [0, 0,  0, 1.000]])
 
 # End-condition position in the world frame. FoundationPose uses metres, so
 # convert the requested millimetre coordinates once at startup.
@@ -160,7 +160,7 @@ if __name__=='__main__':
   parser.add_argument('--track_refine_iter', type=int, default=2)
   parser.add_argument('--debug', type=int, default=1)
   parser.add_argument('--debug_dir', type=str, default=f'{code_dir}/debug')
-  parser.add_argument('--system', choices=['diamond'], default='diamond')
+  parser.add_argument('--system', choices=['cone'], default='cone')
   parser.add_argument('--lcm_publish', type=int, default=1)
   args = parser.parse_args()
   print(f'run_live_demo: parsed args={args}')
@@ -170,8 +170,8 @@ if __name__=='__main__':
   set_logging_format()
   set_seed(0)
 
-  mesh_file = f'{code_dir}/demo_data/diamond.obj'
-  print('run_live_demo: selected system diamond')
+  mesh_file = f'{code_dir}/demo_data/cone.obj'
+  print('run_live_demo: selected system cone')
 
   print("This is the mesh file: " + mesh_file)
   if not op.isfile(mesh_file):
@@ -211,13 +211,13 @@ if __name__=='__main__':
   print(f'run_live_demo: initial is_near={is_near}')
 
   # get_world_T_cam returns the inverse of the saved camera_T_world transform.
-  # Recover camera_T_world and use it to place the diamond in the camera frame.
+  # Recover camera_T_world and use it to place the cone in the camera frame.
   camera_T_world = np.linalg.inv(world_to_cam)
-  camera_T_diamond = camera_T_world @ WORLD_T_DIAMOND
-  print(f'run_live_demo: camera_T_diamond={camera_T_diamond.tolist()}')
+  camera_T_cone = camera_T_world @ WORLD_T_CONE
+  print(f'run_live_demo: camera_T_cone={camera_T_cone.tolist()}')
 
   # The known starting pose also supplies FoundationPose's initial orientation.
-  hardcoded_initial_rot_mat = camera_T_diamond[:3, :3]
+  hardcoded_initial_rot_mat = camera_T_cone[:3, :3]
 
   print('run_live_demo: creating predictors and rasterizer context')
   scorer = ScorePredictor()
@@ -370,7 +370,7 @@ if __name__=='__main__':
         print('run_live_demo: first frame registration path')
         mask, rendered_depth = render_mask_from_known_pose(
             estimator=est,
-            camera_T_object=camera_T_diamond,
+            camera_T_object=camera_T_cone,
             K=cam_K,
             height=H,
             width=W,
@@ -378,7 +378,7 @@ if __name__=='__main__':
         mask_area = int(mask.sum())
         if mask_area < 100:
           raise RuntimeError(
-              f'Rendered diamond mask is empty or too small: '
+              f'Rendered cone mask is empty or too small: '
               f'{mask_area} pixels'
           )
 
@@ -392,7 +392,7 @@ if __name__=='__main__':
         imageio.imwrite(f'{debug_dir}/automatic_mask_overlay.png', overlay)
         np.save(f'{debug_dir}/automatic_rendered_depth.npy', rendered_depth)
         print(
-            f'run_live_demo: rendered automatic diamond mask with '
+            f'run_live_demo: rendered automatic cone mask with '
             f'{mask_area} pixels'
         )
 
@@ -435,9 +435,9 @@ if __name__=='__main__':
           dist_from_cam=pose[2, 3], was_near=is_near)
       obj_pose_in_world = world_to_cam @ pose
 
-      diamond_position_world = obj_pose_in_world[:3, 3]
+      cone_position_world = obj_pose_in_world[:3, 3]
       if (not end_condition_reached and np.all(
-          np.abs(diamond_position_world - END_POSITION_WORLD)
+          np.abs(cone_position_world - END_POSITION_WORLD)
           <= END_POSITION_TOLERANCE
       )):
         print("END CONDITION REACHED")
@@ -446,7 +446,7 @@ if __name__=='__main__':
       # Publish the pose over LCM.
       if args.lcm_publish > 0:
         print('run_live_demo: publishing pose over LCM')
-        lcm_pose_publisher.publish_pose("Diamond", obj_pose_in_world)
+        lcm_pose_publisher.publish_pose("Cone", obj_pose_in_world)
         print('run_live_demo: LCM publish complete')
 
       if keep_gui_window_open:
