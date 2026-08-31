@@ -1,0 +1,94 @@
+# FoundationPose image for RTX 50 series (Blackwell / sm_120), e.g. RTX 5090.
+#
+# The pre-built bibitbianchini/wenbowen123 images are CUDA 11.8 / PyTorch cu118 and
+# contain no compute kernels for sm_120, so this builds a fresh stack on
+# CUDA 12.8 / PyTorch 2.7.1. It still targets sm_89 too, so the same image runs on a 4090.
+#
+# Build (context = repo root, so requirements.txt is in scope):
+#   docker build --network host -f docker/dockerfile.cu128 -t foundationpose:latest .
+#
+# pytorch3d is compiled from source (no sm_120 wheels) -- expect a long build.
+
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=US/Eastern
+# Ada (4090) + Blackwell (50 series). Used by pytorch3d, mycuda, nvdiffrast JIT.
+ENV TORCH_CUDA_ARCH_LIST="8.9;12.0"
+ENV FORCE_CUDA=1
+ENV OPENCV_IO_ENABLE_OPENEXR=1
+# Headless rendering for pyrender.OffscreenRenderer (offscreen_renderer.py).
+ENV PYOPENGL_PLATFORM=egl
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=all
+ENV SHELL=/bin/bash
+
+# ---------------------------------------------------------------------------
+# 1. System dependencies: build tools, Boost/yaml for mycpp, GL/EGL for pyrender
+# ---------------------------------------------------------------------------
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
+    apt-get update && apt-get install -y --no-install-recommends \
+      git wget curl unzip vim tmux ca-certificates pkg-config \
+      g++ gcc build-essential cmake checkinstall gfortran \
+      libboost-all-dev libeigen3-dev libyaml-cpp-dev libzmq3-dev libflann-dev \
+      libgl1 libglib2.0-0 libgomp1 libglvnd0 libglx0 libegl1 libgles2 \
+      libosmesa6 libosmesa6-dev freeglut3-dev libglfw3-dev libgles2-mesa-dev \
+      libassimp-dev libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# 2. Eigen 3.4.0 + pybind11 from source (mycpp/CMakeLists.txt find_package)
+# ---------------------------------------------------------------------------
+RUN cd /tmp && \
+    wget -q https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz && \
+    tar xzf eigen-3.4.0.tar.gz && cd eigen-3.4.0 && mkdir build && cd build && \
+    cmake .. && make install && cd /tmp && rm -rf eigen-3.4.0 eigen-3.4.0.tar.gz
+
+RUN git clone --branch v2.12.0 --depth 1 https://github.com/pybind/pybind11 /tmp/pybind11 && \
+    cd /tmp/pybind11 && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+      -DPYBIND11_TEST=OFF -DPYBIND11_INSTALL=ON && \
+    cmake --build build --target install -j"$(nproc)" && \
+    pip install --no-cache-dir pybind11==2.12.0 && \
+    rm -rf /tmp/pybind11
+
+# ---------------------------------------------------------------------------
+# 3. Python dependencies (torch 2.7.1+cu128 pinned in requirements.txt)
+# ---------------------------------------------------------------------------
+COPY requirements.txt /tmp/requirements.txt
+RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
+
+# ---------------------------------------------------------------------------
+# 4. nvdiffrast (runtime JIT), kaolin wheel for torch-2.7/cu128, pytorch3d from source
+# ---------------------------------------------------------------------------
+RUN python -m pip install --no-cache-dir --no-build-isolation git+https://github.com/NVlabs/nvdiffrast.git
+
+RUN python -m pip install --no-cache-dir kaolin==0.18.0 \
+      -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.7.0_cu128.html
+
+RUN python -m pip install --no-cache-dir --no-build-isolation \
+      "git+https://github.com/facebookresearch/pytorch3d.git@stable"
+
+# ---------------------------------------------------------------------------
+# 5. LCM 1.5.0 (run_demo.py / run_live_demo.py import lcm) + RealSense
+# ---------------------------------------------------------------------------
+ENV LCM_LIBRARY_DIR="/usr/local/lib"
+ENV LCM_VERSION="1.5.0"
+ENV PKG_CONFIG_PATH="/usr/local/lib/pkgconfig"
+WORKDIR $LCM_LIBRARY_DIR
+RUN apt-get update && apt-get install -y --no-install-recommends libglib2.0-dev && rm -rf /var/lib/apt/lists/* && \
+    curl -L -o lcm-$LCM_VERSION.zip https://github.com/lcm-proj/lcm/archive/refs/tags/v$LCM_VERSION.zip && \
+    unzip lcm-$LCM_VERSION.zip && \
+    cd lcm-$LCM_VERSION && mkdir build && cd build && \
+    cmake ../ -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && make -j"$(nproc)" && \
+    make install && ldconfig && \
+    echo "$LCM_LIBRARY_DIR" | tee -a /etc/ld.so.conf.d/lcm.conf && ldconfig && \
+    cp -r /usr/local/lib/python3.11/site-packages/lcm "$(python -c 'import site; print(site.getsitepackages()[0])')/" && \
+    python -c "import lcm; print('lcm', lcm.__file__)" && \
+    cd $LCM_LIBRARY_DIR && rm -f lcm-$LCM_VERSION.zip
+
+RUN apt-get update && apt-get install -y --no-install-recommends libusb-1.0-0 && rm -rf /var/lib/apt/lists/*
+RUN python -m pip install --no-cache-dir pyrealsense2
+
+# ---------------------------------------------------------------------------
+RUN ln -sf /bin/bash /bin/sh
+WORKDIR /workspace

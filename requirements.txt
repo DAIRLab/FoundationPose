@@ -1,10 +1,9 @@
-# PyTorch 2.1.1
---extra-index-url https://download.pytorch.org/whl/cu118
-# torch==2.1.1+cu118
-# torchvision==0.16.1+cu118
-torch==2.0.0+cu118
-torchvision==0.15.1+cu118
-torchaudio==2.0.1+cu118
+# PyTorch 2.7.1 + CUDA 12.8 -- required for RTX 50 series (Blackwell, sm_120).
+# For 4090/older GPUs the previous cu118 pins (torch 2.0.0) also work; see readme.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1+cu128
+torchvision==0.22.1+cu128
+torchaudio==2.7.1+cu128
 
 
 # JupyterLab
@@ -76,7 +75,7 @@ kornia==0.7.2
 einops==0.7.0
 transformations==2024.6.1
 joblib==1.3.2
-warp-lang==1.0.2
+warp-lang==1.7.2  # >=1.7 required by kaolin 0.18 (warp.fem.linalg); FoundationPose uses only the stable wp.kernel/launch API
 
 # For PyTorch3D
 fvcore==0.1.5.post20221221

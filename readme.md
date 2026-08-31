@@ -66,15 +66,34 @@ year          = {2023},
 1) [Optional] Download our preprocessed reference views [here](https://drive.google.com/drive/folders/1PXXCOJqHXwQTbwPwPbGDN9_vLVe0XpFS?usp=sharing) in order to run model-free few-shot version.
 
 # Env setup option 1: docker (recommended)
-The below works when installing with 4090:
+
+Pick the image that matches your GPU, then `bash docker/run_container.sh`.
+
+**RTX 50 series (5090 / 5080 / Blackwell, sm_120)** — needs CUDA 12.8 / PyTorch 2.7:
   ```
-  docker pull bibitbianchini/foundationpose && docker tag bibitbianchini/foundationpose foundationpose
+  docker pull bibitbianchini/foundationpose:cu128 && docker tag bibitbianchini/foundationpose:cu128 foundationpose:latest
   bash docker/run_container.sh
   ```
-If installing not on 4090, can replace the `docker pull` step with:
+  Or build it from scratch (context must be the repo root; pytorch3d compiles from
+  source so this takes a while):
   ```
-  docker pull wenbowen123/foundationpose && docker tag wenbowen123/foundationpose foundationpose  # Or to build from scratch: docker build --network host -t foundationpose .
+  docker build --network host -f docker/dockerfile.cu128 -t foundationpose:latest .
   ```
+
+**RTX 4090 (Ada, sm_89)**:
+  ```
+  docker pull bibitbianchini/foundationpose && docker tag bibitbianchini/foundationpose foundationpose:latest
+  bash docker/run_container.sh
+  ```
+
+**Older GPUs**, replace the `docker pull` above with:
+  ```
+  docker pull wenbowen123/foundationpose && docker tag wenbowen123/foundationpose foundationpose:latest  # Or to build from scratch: docker build --network host -t foundationpose .
+  ```
+
+Note: Docker Engine and the NVIDIA Container Toolkit must be installed on the host
+(`docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu22.04 nvidia-smi` should
+print your GPU).
 
 
 If it's the first time you launch the container, you need to build extensions.
