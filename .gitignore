@@ -63,11 +63,11 @@ htmlcov/
 .coverage.*
 .cache
 nosetests.xml
-demo_data/
+# demo_data/
 debug/
 coverage.xml
 *.cover
-demo_data/
+demo_data/*.zip
 debug/
 weights/
 *.py,cover
