@@ -1,5 +1,8 @@
 """Script to calibrate the extrinsics (and detect the intrinsics reported by the
-RealSense) of a RealSense D455 camera based on a pre-defined Aruco tag board.
+RealSense) of a RealSense D435i camera based on a pre-defined Aruco tag board.
+(Historically a D455 was used here; the two get swapped occasionally, which is
+why the intrinsics file records the camera serial + product line and
+run_live_demo.py hard-errors on a mismatch.)
 Requires virtual environment at ci_mpc_utils/venv/ where the following packages
 are required:
 
@@ -16,10 +19,12 @@ from cv2 import aruco
 from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 import os.path as op
 import pyrealsense2 as rs
 
 import file_utils
+from state_estimation.intrinsics import CameraIntrinsics, write_reference_intrinsics
 
 
 COMPUTE_EXTRINSICS = True
@@ -36,6 +41,8 @@ BOARD_T_WORLD = np.array([[-1, 0, 0, 0.351],
 TIMESTAMP = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 FOUNDATIONPOSE_DIR = op.dirname(op.abspath(__file__))
 EXTRINSICS_DIR = op.join(FOUNDATIONPOSE_DIR, 'extrinsics')
+INTRINSICS_DIR = op.join(FOUNDATIONPOSE_DIR, 'intrinsics')
+CAM_K_REFERENCE_PATH = op.join(INTRINSICS_DIR, 'cam_K.txt')
 
 def get_filepath(filename):
     cam_cal_dir = file_utils.calibration_subdir(TIMESTAMP)
@@ -137,6 +144,32 @@ if COMPUTE_EXTRINSICS:
     color_tf_world_path = op.join(EXTRINSICS_DIR, 'color_tf_world.npy')
     np.save(color_tf_world_path, C_T_W)
     print(f'Saved active world transform to: {color_tf_world_path}')
+
+    # Write the stable intrinsics reference that run_live_demo.py validates the
+    # live camera against. Because depth is aligned into the color frame, these
+    # color intrinsics are the single correct K for FoundationPose.
+    _device = pipeline.get_active_profile().get_device()
+    try:
+        _serial = str(_device.get_info(rs.camera_info.serial_number))
+    except Exception:
+        _serial = ''
+    try:
+        _product_line = str(_device.get_info(rs.camera_info.product_line))
+    except Exception:
+        _product_line = ''
+    _ref = CameraIntrinsics(
+        fx=intrinsics.fx, fy=intrinsics.fy,
+        ppx=intrinsics.ppx, ppy=intrinsics.ppy,
+        width=intrinsics.width, height=intrinsics.height,
+        serial=_serial, product_line=_product_line,
+        distortion_model=str(intrinsics.model),
+        distortion_coeffs=list(intrinsics.coeffs),
+    )
+    os.makedirs(INTRINSICS_DIR, exist_ok=True)
+    write_reference_intrinsics(CAM_K_REFERENCE_PATH, _ref)
+    print(f'Saved intrinsics reference to: {CAM_K_REFERENCE_PATH} '
+          f'(serial {_serial or "?"}, {_product_line or "?"}, '
+          f'{intrinsics.width}x{intrinsics.height})')
 
 if RECORD_RGBD_IMAGE:
     assert COMPUTE_EXTRINSICS, 'Need to compute extrinsics first!'
