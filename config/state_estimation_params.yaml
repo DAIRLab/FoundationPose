@@ -1,0 +1,152 @@
+# FoundationPose state-estimation parameters for the SC3 cone demo.  Loaded by
+# run_live_demo.py.
+
+# ---------------------------------------------------------------------------
+# Camera capture + intrinsics
+# ---------------------------------------------------------------------------
+camera:
+  # Stream configuration. Depth can run at a different (higher) resolution than
+  # color; rs.align resamples depth into the color frame regardless.
+  depth_width: 848    # 848x480 is D435i's native depth resolution
+  depth_height: 480
+  depth_fps: 30
+  color_width: 640
+  color_height: 480
+  color_fps: 30
+
+  # The resolution FoundationPose actually consumes. run_live_demo resizes the
+  # color/depth frames to this and scales the live intrinsics to match. Set
+  # equal to color_{width,height} to disable resizing.
+  process_width: 640
+  process_height: 480
+
+  # RealSense advanced-mode visual preset. One of:
+  #   "" (leave device default), "Default", "Hand", "High Accuracy",
+  #   "High Density", "Medium Density".
+  # High Accuracy => cleaner but sparser depth.  TODO @bibit test on hardware
+  # Off = "" (leave device default).
+  visual_preset: "High Accuracy"
+
+  # IR projector. Off = leave device default (null = don't touch the option).
+  emitter_enabled: null   # TODO @bibit:  try true and 240
+  laser_power: null       # mW-ish scale, device dependent; null => leave default
+
+  # RealSense SDK post-processing filters applied to depth before it reaches
+  # FoundationPose. Evaluate against FoundationPose's own erode/bilateral.
+  # Off = all false.
+  post_processing:
+    temporal: false       # TODO @bibit:  try true
+    spatial: false
+    hole_filling: false
+
+  intrinsics:
+    # Path (relative to the FoundationPose repo root) of the stable intrinsics
+    # file written by camera_calibration.py.
+    reference_file: intrinsics/cam_K.txt
+    # Live-vs-reference validation tolerances. Resolution and serial must match
+    # exactly; focal length / principal point may drift by this much.
+    focal_tol_px: 2.0
+    principal_tol_px: 3.0
+    require_serial_match: true
+
+# ---------------------------------------------------------------------------
+# Object model / symmetry
+# ---------------------------------------------------------------------------
+object:
+  # The cone mesh (demo_data/cone.obj) is a regular hexagonal pyramid, so it has
+  # 6-fold discrete rotational symmetry about its body axis.
+  symmetry_count: 6
+  # Body-frame axis the symmetry is about (CAD +x points through the apex).
+  symmetry_axis: [1.0, 0.0, 0.0]
+
+# ---------------------------------------------------------------------------
+# Per-frame workspace + self-occlusion depth mask
+# ---------------------------------------------------------------------------
+mask:
+  enabled: false
+  # Dilate the rendered silhouette by this many pixels before using it to keep
+  # depth (covers silhouette error from a slightly-drifted pose).
+  silhouette_dilation_px: 12
+  # World-frame axis-aligned box that valid depth must fall inside, in metres.
+  # z low is slightly below the plate to keep near-plate object points.
+  workspace_box_world:
+    x: [-0.05, 0.45]
+    y: [-0.05, 0.45]
+    z: [-0.005, 0.150]
+  # Additional local crop: keep depth within this many mesh-diameters (XY, in the
+  # world frame) of the last object estimate. null => disabled.
+  local_xy_radius_diameters: 2.5
+  # Also zero the masked-out region of the RGB image handed to track_one.
+  mask_rgb: true
+
+# ---------------------------------------------------------------------------
+# Opportunistic re-registration / drift guard
+# ---------------------------------------------------------------------------
+reregistration:
+  # Switches on/off this entire feature.
+  enabled: false
+
+  # ----- Hard gates: re-registration NEVER runs unless ALL enabled gates pass.
+  # "EE repositioning" gate: only re-register when NOT in C3 contact mode.
+  require_repositioning: true
+  sampling_c3_debug_channel: SAMPLING_C3_DEBUG
+  # Treat the repositioning signal as stale (=> gate fails) after this long with
+  # no message.
+  is_c3_mode_timeout_s: 1.0
+
+  # "Object still" gate: max translation / rotation of the estimate over the
+  # trailing window must stay under these for the object to count as still.
+  still_window_s: 0.75
+  still_trans_m: 0.005
+  still_rot_deg: 6.0
+
+  # ----- Timing once the gates are open.
+  min_interval_s: 20.0
+
+  # Keep the tracked pose instead of the fresh register result when the fresh
+  # register scores worse than the tracked pose's reprojection residual.
+  keep_better_of_track_and_register: true
+
+  # ----- Health checks. Each only lets a re-registration fire earlier than
+  # min_interval_s (once the hard gates are open); none bypass the hard gates.
+  health_checks:
+    penetration:
+      enabled: true
+      # Lowest mesh point (given the estimated orientation) below world z by
+      # more than this, for this many consecutive frames.
+      z_below_plate_m: 0.003
+      sustained_frames: 5
+    orientation_jump:
+      enabled: true
+      # Single-frame rotation magnitude above this is anomalous. Set generously:
+      # the goal sequence does a slow ~180 deg reorientation, but never in one
+      # frame.
+      threshold_deg: 12.0
+    low_confidence:
+      enabled: true
+      # change-5 confidence below this for this many consecutive frames.
+      min_confidence: 0.3
+      sustained_frames: 8
+
+  # When a health check trips but the hard gates are closed (object moving / EE
+  # pushing) we cannot re-register. Instead:
+  hold_last_good_pose_on_bad_health: false
+
+# ---------------------------------------------------------------------------
+# Estimate-quality signal
+# ---------------------------------------------------------------------------
+confidence:
+  # The confidence signal is computed every frame internally -- this only
+  # silences the outbound channel.
+  # NOTE:  Both of these naturally go down with occlusions.
+  publish: true
+  channel: OBJECT_STATE_CONFIDENCE
+  # Depth residual (mean |z_render - z_obs| over mask pixels, in mm) mapping to
+  # a [0, 1] confidence: residual <= good_mm -> 1, residual >= bad_mm -> 0.
+  good_residual_mm: 1.0
+  bad_residual_mm: 8.0
+  # Mask coverage (fraction of rendered silhouette pixels with valid observed
+  # depth) mapping to [0, 1]: coverage >= good -> 1, coverage <= bad -> 0.
+  good_coverage: 0.60
+  bad_coverage: 0.15
+  # Final confidence = min(residual_term, coverage_term).

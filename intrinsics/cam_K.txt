@@ -1,0 +1,10 @@
+serial: 346222071380
+product_line: D400
+width: 640
+height: 480
+distortion_model: distortion.inverse_brown_conrady
+distortion_coeffs: 0 0 0 0 0
+K:
+604.0511475 0 326.8573303
+0 603.3922729 253.4977112
+0 0 1
