@@ -22,6 +22,7 @@ import numpy as np
 import os
 import os.path as op
 import pyrealsense2 as rs
+import shutil
 
 import file_utils
 from state_estimation.intrinsics import CameraIntrinsics, write_reference_intrinsics
@@ -38,10 +39,13 @@ BOARD_T_WORLD = np.array([[-1, 0, 0, 0.351],
                           [0, 1, 0, -0.497],
                           [0, 0, 0, 1]])
 
+# directories for saving calibration products
 TIMESTAMP = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 FOUNDATIONPOSE_DIR = op.dirname(op.abspath(__file__))
 EXTRINSICS_DIR = op.join(FOUNDATIONPOSE_DIR, 'extrinsics')
 INTRINSICS_DIR = op.join(FOUNDATIONPOSE_DIR, 'intrinsics')
+CALIBRATION_LOG_DIR = op.join(
+    FOUNDATIONPOSE_DIR, 'logs', f'calibration_{TIMESTAMP}')
 CAM_K_REFERENCE_PATH = op.join(INTRINSICS_DIR, 'cam_K.txt')
 
 def get_filepath(filename):
@@ -170,6 +174,16 @@ if COMPUTE_EXTRINSICS:
     print(f'Saved intrinsics reference to: {CAM_K_REFERENCE_PATH} '
           f'(serial {_serial or "?"}, {_product_line or "?"}, '
           f'{intrinsics.width}x{intrinsics.height})')
+
+    # Preserve the calibration products from this run in addition to updating
+    # the stable paths consumed by run_live_demo.py.
+    os.makedirs(CALIBRATION_LOG_DIR, exist_ok=True)
+    logged_extrinsics_path = op.join(
+        CALIBRATION_LOG_DIR, 'color_tf_world.npy')
+    logged_intrinsics_path = op.join(CALIBRATION_LOG_DIR, 'cam_K.txt')
+    shutil.copy2(color_tf_world_path, logged_extrinsics_path)
+    shutil.copy2(CAM_K_REFERENCE_PATH, logged_intrinsics_path)
+    print(f'Logged calibration files to: {CALIBRATION_LOG_DIR}')
 
 if RECORD_RGBD_IMAGE:
     assert COMPUTE_EXTRINSICS, 'Need to compute extrinsics first!'

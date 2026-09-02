@@ -10,6 +10,8 @@ intrinsics live from the RealSense pipeline and validates them against
   color-stream `K` plus the resolution, distortion coefficients, camera serial
   and product line it was captured at. Regenerate it whenever the camera or the
   capture resolution changes (`python camera_calibration.py`).
+  Each calibration run also archives this file and `color_tf_world.npy` under
+  `logs/calibration_<date>_<time>/`.
 - **`cam_K_legacy.txt`**, **`old_cam_legacy.txt`** — the two matrices that used
   to be hard-coded in `run_live_demo.py` (`cam_K` at 640x480, and the older
   `old_cam`). Kept for reference only; not read by any code.
