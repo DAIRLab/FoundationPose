@@ -17,6 +17,9 @@ class PosePublisher:
             't': 'push_t_white',
             'cube': 'cube',
             'cone': 'cone',
+            'sailboat': 'sailboat',
+            'pinecone': 'pinecone',
+            'lemon': 'lemon',
         }
         if system_name not in prefixes:
             raise ValueError(

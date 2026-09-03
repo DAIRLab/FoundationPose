@@ -281,12 +281,12 @@ if RECORD_RGBD_IMAGE:
     plt.close()
 
     # Project known world points onto a more cropped image.
-    points_world_b = points_world[points_world[:, 0] > 0.05]
-    points_world_b = points_world_b[points_world_b[:, 0] < 0.4]
-    points_world_b = points_world_b[points_world_b[:, 1] > 0.165]
-    points_world_b = points_world_b[points_world_b[:, 1] < 0.195]
+    points_world_b = points_world[points_world[:, 0] > -0.1]
+    points_world_b = points_world_b[points_world_b[:, 0] < 0.5]
+    points_world_b = points_world_b[points_world_b[:, 1] > 0.4]
+    points_world_b = points_world_b[points_world_b[:, 1] < 0.6]
     points_world_b = points_world_b[points_world_b[:, 2] > -0.1]
-    points_world_b = points_world_b[points_world_b[:, 2] < 0.4]
+    points_world_b = points_world_b[points_world_b[:, 2] < 0.8]
 
     plt.figure()
     ax = plt.axes(projection='3d')
@@ -304,12 +304,12 @@ if RECORD_RGBD_IMAGE:
     plt.close()
 
     # Make a 3d plot again but with more points cropped out.
-    points_world_t = points_world[points_world[:, 0] < 0.4]
-    points_world_t = points_world_t[points_world_t[:, 0] > 0.08]
-    points_world_t = points_world_t[points_world_t[:, 1] > -0.4]
-    points_world_t = points_world_t[points_world_t[:, 1] < 0.4]
-    points_world_t = points_world_t[points_world_t[:, 2] > -0.04]
-    points_world_t = points_world_t[points_world_t[:, 2] < -0.02]
+    points_world_t = points_world[points_world[:, 0] > -0.1]
+    points_world_t = points_world_t[points_world_t[:, 0] < 0.5]
+    points_world_t = points_world_t[points_world_t[:, 1] > -0.2]
+    points_world_t = points_world_t[points_world_t[:, 1] < 0.6]
+    points_world_t = points_world_t[points_world_t[:, 2] > -0.1]
+    points_world_t = points_world_t[points_world_t[:, 2] < 0.1]
 
     plt.figure()
     ax = plt.axes(projection='3d')

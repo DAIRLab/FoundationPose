@@ -55,15 +55,20 @@ from state_estimation.render import render_silhouette, mesh_min_z_in_world
 
 CODE_DIR = op.dirname(op.abspath(__file__))
 
+OBJECT_MESH_FILES = {
+    'cone': 'cone.obj',
+    'sailboat': 'sailboat.obj',
+    'pinecone': 'pinecone.obj',
+    'lemon': 'lemon.obj',
+}
 
-# Fixed starting pose of the cone's original CAD frame in world coordinates.
-# The CAD origin is at the bottom center of the cone, measured in metres.
-# The CAD was modeled with +X pointing through the cone's upper point, so a
-# -90-degree rotation about Y maps CAD +X onto world +Z (the vertical axis).
-WORLD_T_CONE = np.array([[0, 0, -1, 0.280],
-                         [0, 1,  0, 0.250],
-                         [1, 0,  0, 0.000],
-                         [0, 0,  0, 1.000]])
+
+# Fixed starting pose of the original CAD frame in world coordinates. All
+# selectable OBJ files are expected to use the same origin and orientation.
+WORLD_T_OBJECT = np.array([[0, 0, -1, 0.280],
+                           [0, 1,  0, 0.250],
+                           [1, 0,  0, 0.000],
+                           [0, 0,  0, 1.000]])
 
 # End-condition position in the world frame. FoundationPose uses metres, so
 # convert the requested millimetre coordinates once at startup.
@@ -152,7 +157,9 @@ if __name__=='__main__':
   parser.add_argument('--track_refine_iter', type=int, default=2)
   parser.add_argument('--debug', type=int, default=1)
   parser.add_argument('--debug_dir', type=str, default=f'{code_dir}/debug')
-  parser.add_argument('--system', choices=['cone'], default='cone')
+  parser.add_argument(
+      '--system', choices=sorted(OBJECT_MESH_FILES), required=True,
+      help='object model to track (loaded from demo_data)')
   parser.add_argument('--lcm_publish', type=int, default=1)
   parser.add_argument('--config', type=str, default=None,
                       help='state-estimation params YAML (default: '
@@ -173,12 +180,13 @@ if __name__=='__main__':
   set_logging_format()
   set_seed(0)
 
-  mesh_file = f'{code_dir}/demo_data/cone.obj'
-  print('run_live_demo: selected system cone')
+  mesh_file = op.join(code_dir, 'demo_data', OBJECT_MESH_FILES[args.system])
+  print(f'run_live_demo: selected system {args.system}')
 
   print("This is the mesh file: " + mesh_file)
   if not op.isfile(mesh_file):
-    raise FileNotFoundError(f'Mesh file not found: {mesh_file}')
+    raise FileNotFoundError(
+        f'Mesh file for --system {args.system!r} not found: {mesh_file}')
   print('run_live_demo: loading mesh')
   mesh = trimesh.load(mesh_file, force='mesh')
   print("LOADED MESH FILE")
@@ -203,18 +211,22 @@ if __name__=='__main__':
   print(f'run_live_demo: initial is_near={is_near}')
 
   # get_world_T_cam returns the inverse of the saved camera_T_world transform.
-  # Recover camera_T_world and use it to place the cone in the camera frame.
+  # Recover camera_T_world and use it to place the object in the camera frame.
   camera_T_world = np.linalg.inv(world_to_cam)
-  camera_T_cone = camera_T_world @ WORLD_T_CONE
-  print(f'run_live_demo: camera_T_cone={camera_T_cone.tolist()}')
+  camera_T_object = camera_T_world @ WORLD_T_OBJECT
+  print(f'run_live_demo: camera_T_object={camera_T_object.tolist()}')
 
   # The known starting pose also supplies FoundationPose's initial orientation.
-  hardcoded_initial_rot_mat = camera_T_cone[:3, :3]
+  hardcoded_initial_rot_mat = camera_T_object[:3, :3]
 
-  # Tell FoundationPose about the cone's discrete rotational symmetry so it
-  # stops flipping between equivalent orientations (config: object.*).
-  symmetry_count = params.get_path('object.symmetry_count')
-  symmetry_axis = params.get_path('object.symmetry_axis')
+  # The configured discrete symmetry describes cone.obj. Do not impose that
+  # geometry-specific assumption on the other selectable models.
+  if args.system == 'cone':
+    symmetry_count = params.get_path('object.symmetry_count')
+    symmetry_axis = params.get_path('object.symmetry_axis')
+  else:
+    symmetry_count = 1
+    symmetry_axis = [1.0, 0.0, 0.0]
   symmetry_tfs = make_symmetry_tfs(symmetry_count, symmetry_axis)
   print(f'run_live_demo: using {symmetry_count} symmetry transforms about '
         f'{symmetry_axis}')
@@ -361,7 +373,8 @@ if __name__=='__main__':
     os.makedirs(f'{dump_dir}/depth', exist_ok=True)
     np.save(f'{dump_dir}/cam_K.npy', cam_K)
     np.save(f'{dump_dir}/world_to_cam.npy', world_to_cam)
-    np.save(f'{dump_dir}/camera_T_cone.npy', camera_T_cone)
+    # Keep the legacy filename because analysis/replay_estimate.py consumes it.
+    np.save(f'{dump_dir}/camera_T_cone.npy', camera_T_object)
     os.system(f'cp {args.config or op.join(CODE_DIR, "config", "state_estimation_params.yaml")} '
               f'{dump_dir}/state_estimation_params.yaml')
     dump_manifest = open(f'{dump_dir}/frames.jsonl', 'w')
@@ -456,7 +469,7 @@ if __name__=='__main__':
         print('run_live_demo: first frame registration path')
         mask, rendered_depth = render_silhouette(
             estimator=est,
-            camera_T_object=camera_T_cone,
+            camera_T_object=camera_T_object,
             K=cam_K,
             height=H,
             width=W,
@@ -464,7 +477,7 @@ if __name__=='__main__':
         mask_area = int(mask.sum())
         if mask_area < 100:
           raise RuntimeError(
-              f'Rendered cone mask is empty or too small: '
+              f'Rendered {args.system} mask is empty or too small: '
               f'{mask_area} pixels'
           )
 
@@ -478,7 +491,7 @@ if __name__=='__main__':
         imageio.imwrite(f'{debug_dir}/automatic_mask_overlay.png', overlay)
         np.save(f'{debug_dir}/automatic_rendered_depth.npy', rendered_depth)
         print(
-            f'run_live_demo: rendered automatic cone mask with '
+            f'run_live_demo: rendered automatic {args.system} mask with '
             f'{mask_area} pixels'
         )
 
@@ -576,9 +589,9 @@ if __name__=='__main__':
           dist_from_cam=pose[2, 3], was_near=is_near)
       obj_pose_in_world = world_to_cam @ pose
 
-      cone_position_world = obj_pose_in_world[:3, 3]
+      object_position_world = obj_pose_in_world[:3, 3]
       if (not end_condition_reached and np.all(
-          np.abs(cone_position_world - END_POSITION_WORLD)
+          np.abs(object_position_world - END_POSITION_WORLD)
           <= END_POSITION_TOLERANCE
       )):
         print("END CONDITION REACHED")
@@ -602,7 +615,8 @@ if __name__=='__main__':
       # Publish the pose over LCM.
       if lcm_pose_publisher is not None:
         print('run_live_demo: publishing pose over LCM')
-        lcm_pose_publisher.publish_pose("Cone", obj_pose_in_world)
+        lcm_pose_publisher.publish_pose(args.system.capitalize(),
+                                        obj_pose_in_world)
         if publish_confidence:
           names, values = conf.as_signal()
           values = values + [
