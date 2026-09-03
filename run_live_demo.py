@@ -15,13 +15,19 @@
        relevant (note:  these have to be different dates).
     3. Change the 'else' block to an 'elif' and add a new 'else' block to the
        'get_world_T_cam' function.
+
+Camera intrinsics are no longer hard-coded here: they are read live from the
+RealSense and validated against ``intrinsics/cam_K.txt`` (written by
+``camera_calibration.py``). Tuning knobs for capture settings, the
+occlusion/workspace mask, cone symmetry, opportunistic re-registration and the
+confidence signal all live in ``config/state_estimation_params.yaml``.
 """
 
 import datetime
+import json
 import pyrealsense2 as rs
 from estimater import *
 from datareader import *
-from Utils import nvdiffrast_render
 import argparse
 from FoundationPose.lcm_systems.pose_publisher import PosePublisher
 # imports for reading camera extrinsics
@@ -32,18 +38,37 @@ import torch
 from scipy.spatial.transform import Rotation as R
 import time
 
+from state_estimation import (
+    load_params,
+    read_reference_intrinsics,
+    intrinsics_from_rs_profile,
+    validate_against_reference,
+    make_symmetry_tfs,
+    WorkspaceMasker,
+    ConfidenceEstimator,
+    ReregistrationController,
+    ControllerModeListener,
+    realsense_setup,
+)
+from state_estimation.render import render_silhouette, mesh_min_z_in_world
+
 
 CODE_DIR = op.dirname(op.abspath(__file__))
 
+OBJECT_MESH_FILES = {
+    'cone': 'cone.obj',
+    'sailboat': 'sailboat.obj',
+    'pinecone': 'pinecone.obj',
+    'lemon': 'lemon.obj',
+}
 
-# Fixed starting pose of the cone's original CAD frame in world coordinates.
-# The CAD origin is at the bottom center of the cone, measured in metres.
-# The CAD was modeled with +X pointing through the cone's upper point, so a
-# -90-degree rotation about Y maps CAD +X onto world +Z (the vertical axis).
-WORLD_T_CONE = np.array([[0, 0, -1, 0.280],
-                         [0, 1,  0, 0.250],
-                         [1, 0,  0, 0.000],
-                         [0, 0,  0, 1.000]])
+
+# Fixed starting pose of the original CAD frame in world coordinates. All
+# selectable OBJ files are expected to use the same origin and orientation.
+WORLD_T_OBJECT = np.array([[0, 0, -1, 0.280],
+                           [0, 1,  0, 0.250],
+                           [1, 0,  0, 0.000],
+                           [0, 0,  0, 1.000]])
 
 # End-condition position in the world frame. FoundationPose uses metres, so
 # convert the requested millimetre coordinates once at startup.
@@ -93,34 +118,6 @@ def draw_world_target(image, camera_from_world, K, reached=False):
   return result
 
 
-def render_mask_from_known_pose(estimator, camera_T_object, K, height, width):
-  """Render the known CAD pose and return a binary silhouette mask."""
-  # FoundationPose centers the mesh internally by subtracting model_center.
-  # Compensate so camera_T_object continues to refer to the original CAD frame.
-  original_T_centered = np.eye(4, dtype=np.float32)
-  original_T_centered[:3, 3] = estimator.model_center
-  camera_T_centered = camera_T_object @ original_T_centered
-
-  pose_batch = torch.as_tensor(
-      camera_T_centered[None], dtype=torch.float32, device='cuda'
-  )
-  _, rendered_depth, _ = nvdiffrast_render(
-      K=K,
-      H=height,
-      W=width,
-      ob_in_cams=pose_batch,
-      glctx=estimator.glctx,
-      mesh_tensors=estimator.mesh_tensors,
-      output_size=(height, width),
-      get_normal=False,
-      use_light=False,
-  )
-
-  rendered_depth = rendered_depth[0].detach().cpu().numpy()
-  mask = (rendered_depth > 0).astype(np.uint8)
-  return mask, rendered_depth
-
-
 def get_extrinsic(filename):
   # Centralize the extrinsics path construction so the rest of the script
   # only deals with logical file names.
@@ -160,22 +157,36 @@ if __name__=='__main__':
   parser.add_argument('--track_refine_iter', type=int, default=2)
   parser.add_argument('--debug', type=int, default=1)
   parser.add_argument('--debug_dir', type=str, default=f'{code_dir}/debug')
-  parser.add_argument('--system', choices=['cone'], default='cone')
+  parser.add_argument(
+      '--system', choices=sorted(OBJECT_MESH_FILES), required=True,
+      help='object model to track (loaded from demo_data)')
   parser.add_argument('--lcm_publish', type=int, default=1)
+  parser.add_argument('--config', type=str, default=None,
+                      help='state-estimation params YAML (default: '
+                           'config/state_estimation_params.yaml)')
+  parser.add_argument('--dump_dir', type=str, default=None,
+                      help='if set, save every raw RGB-D frame + camera '
+                           'geometry + controller mode here for offline replay '
+                           '(analysis/replay_estimate.py)')
   args = parser.parse_args()
   print(f'run_live_demo: parsed args={args}')
+
+  # State-estimation tuning knobs (masking, symmetry, re-registration, ...).
+  params = load_params(args.config)
+  print('run_live_demo: loaded state-estimation params')
 
   # Global runtime setup for deterministic behavior and readable logs.
   print('run_live_demo: initializing logging and random seed')
   set_logging_format()
   set_seed(0)
 
-  mesh_file = f'{code_dir}/demo_data/cone.obj'
-  print('run_live_demo: selected system cone')
+  mesh_file = op.join(code_dir, 'demo_data', OBJECT_MESH_FILES[args.system])
+  print(f'run_live_demo: selected system {args.system}')
 
   print("This is the mesh file: " + mesh_file)
   if not op.isfile(mesh_file):
-    raise FileNotFoundError(f'Mesh file not found: {mesh_file}')
+    raise FileNotFoundError(
+        f'Mesh file for --system {args.system!r} not found: {mesh_file}')
   print('run_live_demo: loading mesh')
   mesh = trimesh.load(mesh_file, force='mesh')
   print("LOADED MESH FILE")
@@ -187,23 +198,12 @@ if __name__=='__main__':
   # current tracking session.
   print('run_live_demo: clearing old debug artifacts')
   os.system(f'rm -rf {debug_dir}/* && mkdir -p {debug_dir}/track_vis {debug_dir}/ob_in_cam')
-    
+
   # Precompute geometry metadata used later for visualization and alignment.
   print('run_live_demo: computing mesh bounds')
   to_origin, extents = trimesh.bounds.oriented_bounds(mesh,ordered=True)
   bbox = mesh.bounds
   print(f'run_live_demo: bbox={bbox}')
-
-  # Get camera information.
-  # Make sure to update this value according to the current intrinsics from the
-  # camera. ros2 topic echo /camera/aligned_depth/camera_info from host machine.
-  old_cam = np.array([[381.8276672363281, 0.0, 320.3140869140625],
-                    [0.0, 381.4604187011719, 244.2602081298828],
-                    [0.0, 0.0, 1.0]])
-  cam_K = np.array([[604.05114746,   0,         326.85733032],
-                    [  0,         603.39227295, 253.49771118],
-                    [  0,           0,           1,        ]])
-  print(f'run_live_demo: cam_K={cam_K.tolist()}')
 
   # Get camera extrinsics.
   print('run_live_demo: loading world-to-camera extrinsics')
@@ -211,13 +211,25 @@ if __name__=='__main__':
   print(f'run_live_demo: initial is_near={is_near}')
 
   # get_world_T_cam returns the inverse of the saved camera_T_world transform.
-  # Recover camera_T_world and use it to place the cone in the camera frame.
+  # Recover camera_T_world and use it to place the object in the camera frame.
   camera_T_world = np.linalg.inv(world_to_cam)
-  camera_T_cone = camera_T_world @ WORLD_T_CONE
-  print(f'run_live_demo: camera_T_cone={camera_T_cone.tolist()}')
+  camera_T_object = camera_T_world @ WORLD_T_OBJECT
+  print(f'run_live_demo: camera_T_object={camera_T_object.tolist()}')
 
   # The known starting pose also supplies FoundationPose's initial orientation.
-  hardcoded_initial_rot_mat = camera_T_cone[:3, :3]
+  hardcoded_initial_rot_mat = camera_T_object[:3, :3]
+
+  # The configured discrete symmetry describes cone.obj. Do not impose that
+  # geometry-specific assumption on the other selectable models.
+  if args.system == 'cone':
+    symmetry_count = params.get_path('object.symmetry_count')
+    symmetry_axis = params.get_path('object.symmetry_axis')
+  else:
+    symmetry_count = 1
+    symmetry_axis = [1.0, 0.0, 0.0]
+  symmetry_tfs = make_symmetry_tfs(symmetry_count, symmetry_axis)
+  print(f'run_live_demo: using {symmetry_count} symmetry transforms about '
+        f'{symmetry_axis}')
 
   print('run_live_demo: creating predictors and rasterizer context')
   scorer = ScorePredictor()
@@ -232,10 +244,23 @@ if __name__=='__main__':
     debug_dir=debug_dir,
     debug=debug,
     glctx=glctx,
+    symmetry_tfs=symmetry_tfs,
     hardcoded_initial_rot_mat=hardcoded_initial_rot_mat,
   )
   logging.info("estimator initialization done")
   print('run_live_demo: estimator initialization done')
+
+  masker = WorkspaceMasker(params, mesh_diameter=est.diameter)
+  confidence_estimator = ConfidenceEstimator(params)
+  rereg = ReregistrationController(params)
+
+  # Background listener for the C3 controller mode (re-registration gate).
+  mode_listener = None
+  if rereg.enabled and rereg.require_repositioning:
+    ch = params.get_path('reregistration.sampling_c3_debug_channel')
+    stale = params.get_path('reregistration.is_c3_mode_timeout_s')
+    mode_listener = ControllerModeListener(ch, stale).start()
+    print(f'run_live_demo: listening for C3 mode on {ch}')
 
   # Create a RealSense pipeline and configure color + depth streaming.
   print('run_live_demo: creating RealSense pipeline')
@@ -264,15 +289,21 @@ if __name__=='__main__':
       print("The demo requires Depth camera with Color sensor")
       exit(0)
 
-  # The demo assumes 640x480 synchronized streams for both depth and color.
-  print('run_live_demo: enabling depth stream 640x480 z16@30')
-  config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-  print('run_live_demo: enabling color stream 640x480 rgb8@30')
-  config.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, 30)
+  # Enable the depth + color streams per config/state_estimation_params.yaml.
+  cam_cfg = params.camera
+  print(f'run_live_demo: enabling streams depth '
+        f'{cam_cfg["depth_width"]}x{cam_cfg["depth_height"]}@{cam_cfg["depth_fps"]}, '
+        f'color {cam_cfg["color_width"]}x{cam_cfg["color_height"]}@{cam_cfg["color_fps"]}')
+  realsense_setup.configure_streams(config, cam_cfg)
 
   # Start streaming only after configuration and device validation succeed.
   print('run_live_demo: starting RealSense pipeline')
   profile = pipeline.start(config)
+
+  # Accuracy-oriented device options (visual preset, emitter, laser power).
+  realsense_setup.apply_device_options(profile, cam_cfg)
+  depth_post_filters = realsense_setup.build_post_processing(cam_cfg)
+  print(f'run_live_demo: {len(depth_post_filters)} depth post-processing filters')
 
   # Depth scale converts raw depth units into metric depth values.
   depth_sensor = profile.get_device().first_depth_sensor()
@@ -292,20 +323,74 @@ if __name__=='__main__':
   align_to = rs.stream.color
   align = rs.align(align_to)
 
+  # --- Camera intrinsics: read live, validate against the calibration file,
+  #     then use the value the camera actually reports (change 0). Because
+  #     depth is aligned into the color frame, the color intrinsics are the
+  #     single correct K for both RGB and depth.
+  color_stream = profile.get_stream(rs.stream.color)
+  live_intr = intrinsics_from_rs_profile(color_stream, device=profile.get_device())
+  intr_cfg = params.get_path('camera.intrinsics')
+  reference_path = op.join(CODE_DIR, intr_cfg['reference_file'])
+  reference_intr = read_reference_intrinsics(reference_path)
+  validate_against_reference(
+      live_intr, reference_intr,
+      focal_tol_px=intr_cfg['focal_tol_px'],
+      principal_tol_px=intr_cfg['principal_tol_px'],
+      require_serial_match=intr_cfg['require_serial_match'],
+  )
+  print(f'run_live_demo: intrinsics OK '
+        f'(serial {live_intr.serial or "?"}, {live_intr.product_line or "?"}, '
+        f'{live_intr.width}x{live_intr.height})')
+
+  # Working resolution FoundationPose actually consumes.
+  W = int(cam_cfg['process_width'])
+  H = int(cam_cfg['process_height'])
+  cam_K = live_intr.scaled_to(W, H).K
+  print(f'run_live_demo: working resolution {W}x{H}, cam_K={cam_K.tolist()}')
+
   i = 0
   print('run_live_demo: entering streaming loop setup')
 
   ################## HERE ##################
 
+  lcm_pose_publisher = None
   if args.lcm_publish > 0:
     # LCM publishing is optional and only initialized when requested.
+    conf_cfg = params.confidence
     print(f'run_live_demo: initializing PosePublisher for system={args.system}')
-    lcm_pose_publisher = PosePublisher(system_name=args.system)
+    lcm_pose_publisher = PosePublisher(
+        system_name=args.system,
+        confidence_channel=conf_cfg['channel'],
+    )
+
+  publish_confidence = bool(params.get_path('confidence.publish'))
+
+  # Optional raw RGB-D dump for offline replay (analysis/replay_estimate.py).
+  dump_dir = args.dump_dir
+  dump_manifest = None
+  if dump_dir:
+    os.makedirs(f'{dump_dir}/color', exist_ok=True)
+    os.makedirs(f'{dump_dir}/depth', exist_ok=True)
+    np.save(f'{dump_dir}/cam_K.npy', cam_K)
+    np.save(f'{dump_dir}/world_to_cam.npy', world_to_cam)
+    # Keep the legacy filename because analysis/replay_estimate.py consumes it.
+    np.save(f'{dump_dir}/camera_T_cone.npy', camera_T_object)
+    os.system(f'cp {args.config or op.join(CODE_DIR, "config", "state_estimation_params.yaml")} '
+              f'{dump_dir}/state_estimation_params.yaml')
+    dump_manifest = open(f'{dump_dir}/frames.jsonl', 'w')
+    print(f'run_live_demo: dumping raw frames to {dump_dir}')
 
   # Estimation begins after a short delay so the camera stream can stabilize.
   Estimating = True
   keep_gui_window_open = True
   end_condition_reached = False
+
+  # Rolling state for the mask / re-registration / confidence logic.
+  prev_pose = None                 # previous frame's camera_T_object (CAD frame)
+  prev_silhouette = None           # rendered object mask from prev_pose
+  last_good_pose = None            # last camera_T_object with acceptable confidence
+  pending_rereg = None
+
   print('run_live_demo: sleeping before starting estimation loop')
   time.sleep(3)
   # Streaming loop.
@@ -313,6 +398,7 @@ if __name__=='__main__':
   try:
     while Estimating:
       start_time = time.perf_counter()
+      now = time.time()
       print(f'run_live_demo: frame {i} start')
       # Fetch the next synchronized RGB-D frame pair from the camera.
       frames = pipeline.wait_for_frames()
@@ -324,7 +410,7 @@ if __name__=='__main__':
       print('run_live_demo: frames aligned')
 
       # Extract the aligned depth and color frames from the synchronized set.
-      aligned_depth_frame = aligned_frames.get_depth_frame()  # aligned_depth_frame is a 640x480 depth image
+      aligned_depth_frame = aligned_frames.get_depth_frame()
       color_frame = aligned_frames.get_color_frame()
       print(f'run_live_demo: depth_frame_ok={bool(aligned_depth_frame)}, color_frame_ok={bool(color_frame)}')
 
@@ -333,18 +419,14 @@ if __name__=='__main__':
         print('run_live_demo: skipping invalid frame pair')
         continue
 
+      # Optional RealSense post-processing (temporal/spatial/hole-filling).
+      aligned_depth_frame = realsense_setup.run_post_processing(
+          aligned_depth_frame, depth_post_filters)
+
       # Convert camera buffers into numpy arrays used by the estimator.
-      depth_image = np.asanyarray(aligned_depth_frame.get_data())/1e3
+      depth_image = np.asanyarray(aligned_depth_frame.get_data()) * depth_scale
       color_image = np.asanyarray(color_frame.get_data())
       print(f'run_live_demo: depth_image.shape={depth_image.shape}, color_image.shape={color_image.shape}')
-
-      # Convert the normalized depth image into the estimator's expected unit
-      # scale.
-      depth_image_scaled = (depth_image * depth_scale * 1000).astype(np.float32)
-      print('run_live_demo: depth image scaled')
-
-      # cv2.imshow('color', color_image)
-      # cv2.imshow('depth', depth_image)
 
       if cv2.waitKey(1) == 13:
         print('run_live_demo: enter key detected, stopping estimation')
@@ -356,21 +438,38 @@ if __name__=='__main__':
       print(f'run_live_demo: processing frame {i}')
 
       # Resize to the working resolution expected by the pose estimator.
-      H, W = cv2.resize(color_image, (640,480)).shape[:2]
-      color = cv2.resize(color_image, (W,H), interpolation=cv2.INTER_NEAREST)
-      depth = cv2.resize(depth_image_scaled, (W,H), interpolation=cv2.INTER_NEAREST)
+      color = cv2.resize(color_image, (W, H), interpolation=cv2.INTER_NEAREST)
+      depth = cv2.resize(depth_image, (W, H),
+                         interpolation=cv2.INTER_NEAREST).astype(np.float32)
       print(f'run_live_demo: resized frame to H={H}, W={W}')
 
-      depth[(depth<0.1) | (depth>=np.inf)] = 0
+      depth[(depth < 0.1) | ~np.isfinite(depth)] = 0
+      observed_depth = depth.copy()  # kept unmasked for the confidence check
       print('run_live_demo: invalid depth values zeroed')
+
+      if dump_manifest is not None:
+        cv2.imwrite(f'{dump_dir}/color/{i:06d}.png', color[..., ::-1])
+        # depth as uint16 millimetres (lossless, compact)
+        cv2.imwrite(f'{dump_dir}/depth/{i:06d}.png',
+                    np.clip(depth * 1000.0, 0, 65535).astype(np.uint16))
+        _rep = (mode_listener.is_repositioning()
+                if mode_listener is not None else None)
+        dump_manifest.write(json.dumps({
+            'i': i, 'wall_time': now, 'is_repositioning': _rep,
+        }) + '\n')
+        dump_manifest.flush()
+
+      did_reregister = False
+      rereg_reason = 'n/a'
+      held_pose = False
 
       if i == 0:
         # The first frame uses the foreground mask and full registration to
         # bootstrap the object pose.
         print('run_live_demo: first frame registration path')
-        mask, rendered_depth = render_mask_from_known_pose(
+        mask, rendered_depth = render_silhouette(
             estimator=est,
-            camera_T_object=camera_T_cone,
+            camera_T_object=camera_T_object,
             K=cam_K,
             height=H,
             width=W,
@@ -378,7 +477,7 @@ if __name__=='__main__':
         mask_area = int(mask.sum())
         if mask_area < 100:
           raise RuntimeError(
-              f'Rendered cone mask is empty or too small: '
+              f'Rendered {args.system} mask is empty or too small: '
               f'{mask_area} pixels'
           )
 
@@ -392,7 +491,7 @@ if __name__=='__main__':
         imageio.imwrite(f'{debug_dir}/automatic_mask_overlay.png', overlay)
         np.save(f'{debug_dir}/automatic_rendered_depth.npy', rendered_depth)
         print(
-            f'run_live_demo: rendered automatic cone mask with '
+            f'run_live_demo: rendered automatic {args.system} mask with '
             f'{mask_area} pixels'
         )
 
@@ -419,11 +518,66 @@ if __name__=='__main__':
           o3d.io.write_point_cloud(f'{debug_dir}/scene_complete.ply', pcd)
 
       else:
-        # After initialization, tracking updates the pose frame-to-frame.
-        print('run_live_demo: tracking update path')
-        pose = est.track_one(rgb=color, depth=depth, K=cam_K,
-                             iteration=args.track_refine_iter)
-        print('run_live_demo: pose tracked')
+        # After initialization, either track frame-to-frame or -- when the
+        # gates allow and the previous frame flagged it -- re-register.
+        do_reregister = pending_rereg is not None and pending_rereg.reregister
+        hold_pose = (pending_rereg is not None
+                     and pending_rereg.hold_last_good_pose
+                     and last_good_pose is not None)
+
+        if do_reregister:
+          rereg_reason = pending_rereg.reason
+          print(f'run_live_demo: RE-REGISTERING ({rereg_reason})')
+          reg_mask, _ = render_silhouette(
+              estimator=est, camera_T_object=prev_pose, K=cam_K,
+              height=H, width=W)
+          if int(reg_mask.sum()) >= 100:
+            pose = est.register(K=cam_K, rgb=color, depth=depth,
+                                ob_mask=reg_mask,
+                                iteration=args.est_refine_iter)
+            rereg.note_reregistered(now)
+            did_reregister = True
+          else:
+            print('run_live_demo: re-registration mask too small; tracking')
+            pose = est.track_one(rgb=color, depth=depth, K=cam_K,
+                                 iteration=args.track_refine_iter)
+        elif hold_pose:
+          # Track quality is bad and we cannot re-register (object moving / EE
+          # pushing): reuse the last good pose rather than chase a bad estimate.
+          held_pose = True
+          rereg_reason = pending_rereg.reason
+          print(f'run_live_demo: HOLDING last good pose ({rereg_reason})')
+          pose = last_good_pose.copy()
+          # Keep the tracker's internal (centered-mesh) state consistent with the
+          # pose we publish, so plain tracking resumes cleanly next frame.
+          #   pose_original = pose_last @ T_to_centered  (T_to_centered[:3,3] = -model_center)
+          T_to_centered = est.get_tf_to_centered_mesh().detach().cpu().numpy()
+          pose_last_np = last_good_pose @ np.linalg.inv(T_to_centered)
+          est.pose_last = torch.from_numpy(
+              pose_last_np.astype(np.float32)).to('cuda')
+        else:
+          # Occlusion / workspace mask before tracking (change 1).
+          masked_depth, masked_color, _keep = masker.apply(
+              depth, color, cam_K, world_to_cam,
+              silhouette=prev_silhouette,
+              last_obj_xyz_world=(
+                  (world_to_cam @ prev_pose)[:3, 3] if prev_pose is not None
+                  else None),
+          )
+          print('run_live_demo: tracking update path')
+          pose = est.track_one(rgb=masked_color, depth=masked_depth, K=cam_K,
+                               iteration=args.track_refine_iter)
+        print('run_live_demo: pose obtained')
+
+      # --- Post-estimate bookkeeping shared by both paths -------------------
+      # Render the object at the *current* estimate: silhouette feeds next
+      # frame's mask, rendered depth feeds the confidence check.
+      cur_silhouette, cur_rendered_depth = render_silhouette(
+          estimator=est, camera_T_object=pose, K=cam_K, height=H, width=W)
+
+      conf = confidence_estimator.evaluate(cur_rendered_depth, observed_depth)
+      print(f'run_live_demo: confidence={conf.confidence:.3f} '
+            f'coverage={conf.mask_coverage:.3f} residual={conf.depth_residual_mm:.2f}mm')
 
       # Persist each estimated object pose so a run can be replayed later.
       print(f'run_live_demo: saving pose for frame {i}')
@@ -435,19 +589,53 @@ if __name__=='__main__':
           dist_from_cam=pose[2, 3], was_near=is_near)
       obj_pose_in_world = world_to_cam @ pose
 
-      cone_position_world = obj_pose_in_world[:3, 3]
+      object_position_world = obj_pose_in_world[:3, 3]
       if (not end_condition_reached and np.all(
-          np.abs(cone_position_world - END_POSITION_WORLD)
+          np.abs(object_position_world - END_POSITION_WORLD)
           <= END_POSITION_TOLERANCE
       )):
         print("END CONDITION REACHED")
         end_condition_reached = True
 
+      # Feed the re-registration state machine (decision applies next frame).
+      if i > 0:
+        min_z_world = mesh_min_z_in_world(mesh, obj_pose_in_world)
+        is_repositioning = (mode_listener.is_repositioning()
+                            if mode_listener is not None else True)
+        pending_rereg = rereg.update(
+            now=now,
+            obj_pose_world=obj_pose_in_world,
+            confidence=conf.confidence,
+            mesh_min_z_world=min_z_world,
+            is_repositioning=is_repositioning,
+        )
+        if not pending_rereg.reregister:
+          print(f'run_live_demo: rereg pending={pending_rereg.reason}')
+
       # Publish the pose over LCM.
-      if args.lcm_publish > 0:
+      if lcm_pose_publisher is not None:
         print('run_live_demo: publishing pose over LCM')
-        lcm_pose_publisher.publish_pose("Cone", obj_pose_in_world)
+        lcm_pose_publisher.publish_pose(args.system.capitalize(),
+                                        obj_pose_in_world)
+        if publish_confidence:
+          names, values = conf.as_signal()
+          values = values + [
+              1.0 if did_reregister else 0.0,
+              1.0 if held_pose else 0.0,
+          ]
+          names = names + ["did_reregister", "held_pose"]
+          lcm_pose_publisher.publish_confidence(
+              names, values, utime=lcm_pose_publisher.pose_msg.utime)
         print('run_live_demo: LCM publish complete')
+
+      # Update rolling state for the next iteration.
+      prev_pose = pose.copy()
+      prev_silhouette = cur_silhouette
+      if conf.confidence >= params.get_path(
+          'reregistration.health_checks.low_confidence.min_confidence'):
+        last_good_pose = pose.copy()
+      elif last_good_pose is None:
+        last_good_pose = pose.copy()
 
       if keep_gui_window_open:
         # Overlay the estimated pose on the live image for fast operator
@@ -458,6 +646,13 @@ if __name__=='__main__':
         camera_from_world = np.linalg.inv(world_to_cam)
         vis = draw_world_target(
             vis, camera_from_world, cam_K, reached=end_condition_reached)
+        status = f'conf {conf.confidence:.2f}'
+        if did_reregister:
+          status += f'  REREG:{rereg_reason}'
+        elif held_pose:
+          status += f'  HOLD:{rereg_reason}'
+        cv2.putText(vis, status, (10, H - 12), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (0, 255, 0), 2, cv2.LINE_AA)
         cv2.imshow("debug", vis[...,::-1])
         key = cv2.waitKey(1)
         print(f'run_live_demo: debug window key={key}')
@@ -483,3 +678,7 @@ if __name__=='__main__':
   finally:
     print('run_live_demo: stopping pipeline')
     pipeline.stop()
+    if mode_listener is not None:
+      mode_listener.stop()
+    if dump_manifest is not None:
+      dump_manifest.close()

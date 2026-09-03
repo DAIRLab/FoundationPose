@@ -1,17 +1,25 @@
-import lcm
-from lcm_systems.lcm_types.lcm_pose import lcmt_object_state
-import numpy as np
-from scipy.spatial.transform import Rotation as R
 import time
 
+import lcm
+import numpy as np
+from scipy.spatial.transform import Rotation as R
+
+from lcm_systems.lcm_types.lcm_pose import lcmt_object_state
+from lcm_systems.lcm_types.drake import lcmt_drake_signal
+
+
 class PosePublisher:
-    def __init__(self, system_name: str):
+    def __init__(self, system_name: str, object_state_channel: str = "OBJECT_STATE",
+                 confidence_channel: str = "OBJECT_STATE_CONFIDENCE"):
         self.lc = lcm.LCM()
         prefixes = {
             'jack': 'capsule_1',
             't': 'push_t_white',
             'cube': 'cube',
             'cone': 'cone',
+            'sailboat': 'sailboat',
+            'pinecone': 'pinecone',
+            'lemon': 'lemon',
         }
         if system_name not in prefixes:
             raise ValueError(
@@ -19,8 +27,10 @@ class PosePublisher:
                 f"{sorted(prefixes)}"
             )
         self.prefix = prefixes[system_name]
+        self.object_state_channel = object_state_channel
+        self.confidence_channel = confidence_channel
 
-    def publish_pose(self, obj_name = "OBJECT", pose = None):
+    def publish_pose(self, obj_name="OBJECT", pose=None):
         # Instantiate the message object
         self.pose_msg = lcmt_object_state()
         # Set the message fields
@@ -38,13 +48,28 @@ class PosePublisher:
         # Convert the pose to a 7-element array
         self.pose_msg.position = self.homogeneous_matrix_to_pose(pose)
         self.pose_msg.velocity = np.zeros(6)
-        self.lc.publish("OBJECT_STATE", self.pose_msg.encode())
+        self.lc.publish(self.object_state_channel, self.pose_msg.encode())
+
+    def publish_confidence(self, names, values, utime=None):
+        """Publish the per-frame estimate-quality signal.
+
+        Reuses the generic Drake ``lcmt_drake_signal`` type (labelled vector of
+        doubles) rather than a bespoke lcmtype. ``timestamp`` is milliseconds per
+        that type's contract.
+        """
+        msg = lcmt_drake_signal()
+        msg.dim = len(values)
+        msg.val = [float(v) for v in values]
+        msg.coord = list(names)
+        msg.timestamp = int((utime / 1000) if utime is not None
+                            else time.time() * 1000)
+        self.lc.publish(self.confidence_channel, msg.encode())
 
     def homogeneous_matrix_to_pose(self, homogeneous_matrix):
         # Convert a 4x4 homogeneous matrix to a 7 element pose with quaternion
         pose = np.zeros(7)
-        scipy_quat = R.from_matrix(homogeneous_matrix[:3,:3]).as_quat()
+        scipy_quat = R.from_matrix(homogeneous_matrix[:3, :3]).as_quat()
         pose[0] = scipy_quat[-1]
         pose[1:4] = scipy_quat[:3]
-        pose[4:] = homogeneous_matrix[:3,3]
+        pose[4:] = homogeneous_matrix[:3, 3]
         return pose
