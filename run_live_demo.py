@@ -51,6 +51,7 @@ from state_estimation import (
     realsense_setup,
 )
 from state_estimation.render import render_silhouette, mesh_min_z_in_world
+from state_estimation.symmetry import stabilize_x_spin
 
 
 CODE_DIR = op.dirname(op.abspath(__file__))
@@ -63,12 +64,35 @@ OBJECT_MESH_FILES = {
 }
 
 
-# Fixed starting pose of the original CAD frame in world coordinates. All
-# selectable OBJ files are expected to use the same origin and orientation.
+# Default starting pose of the original CAD frame in world coordinates.
 WORLD_T_OBJECT = np.array([[0, 0, -1, 0.280],
                            [0, 1,  0, 0.250],
                            [1, 0,  0, 0.000],
                            [0, 0,  0, 1.000]])
+
+# Object-specific initial body origins in world coordinates (metres).
+INITIAL_BODY_ORIGINS = {
+    'cone': np.array([0.280, 0.250, 0.000]),
+    'lemon': np.array([0.280, 0.250, 0.000]),
+    'sailboat': np.array([0.280, 0.25868, 0.000]),
+}
+
+# The sailboat CAD axes differ from the other demo meshes. Rotation-matrix
+# columns are the object X, Y, and Z axes expressed in world coordinates:
+# object X -> world Z, object Y -> world X, object Z -> world Y.
+SAILBOAT_WORLD_R_OBJECT = np.array([[0, 1, 0],
+                                    [0, 0, 1],
+                                    [1, 0, 0]])
+
+
+def initial_world_T_object(system):
+  """Return the object-specific pose used to render the initial mask."""
+  pose = WORLD_T_OBJECT.copy()
+  if system in INITIAL_BODY_ORIGINS:
+    pose[:3, 3] = INITIAL_BODY_ORIGINS[system]
+  if system == 'sailboat':
+    pose[:3, :3] = SAILBOAT_WORLD_R_OBJECT
+  return pose
 
 # End-condition position in the world frame. FoundationPose uses metres, so
 # convert the requested millimetre coordinates once at startup.
@@ -189,6 +213,10 @@ if __name__=='__main__':
         f'Mesh file for --system {args.system!r} not found: {mesh_file}')
   print('run_live_demo: loading mesh')
   mesh = trimesh.load(mesh_file, force='mesh')
+  # Lemon and sailboat are already in meters; other exports use millimeters.
+  mesh_scale = 1.0 if args.system in ('lemon', 'sailboat') else 0.001
+  mesh.apply_scale(mesh_scale)
+  print(f'run_live_demo: mesh scale to meters={mesh_scale}')
   print("LOADED MESH FILE")
 
   debug = args.debug
@@ -213,17 +241,22 @@ if __name__=='__main__':
   # get_world_T_cam returns the inverse of the saved camera_T_world transform.
   # Recover camera_T_world and use it to place the object in the camera frame.
   camera_T_world = np.linalg.inv(world_to_cam)
-  camera_T_object = camera_T_world @ WORLD_T_OBJECT
+  world_T_object = initial_world_T_object(args.system)
+  camera_T_object = camera_T_world @ world_T_object
   print(f'run_live_demo: camera_T_object={camera_T_object.tolist()}')
 
   # The known starting pose also supplies FoundationPose's initial orientation.
   hardcoded_initial_rot_mat = camera_T_object[:3, :3]
 
-  # The configured discrete symmetry describes cone.obj. Do not impose that
-  # geometry-specific assumption on the other selectable models.
+  # Use object-specific symmetries in the centered CAD frame.
   if args.system == 'cone':
     symmetry_count = params.get_path('object.symmetry_count')
     symmetry_axis = params.get_path('object.symmetry_axis')
+  elif args.system == 'lemon':
+    # Approximate continuous symmetry about CAD X with 5-degree increments.
+    # This clusters registration candidates; it does not lock tracking roll.
+    symmetry_count = 72
+    symmetry_axis = [1.0, 0.0, 0.0]
   else:
     symmetry_count = 1
     symmetry_axis = [1.0, 0.0, 0.0]
@@ -505,17 +538,6 @@ if __name__=='__main__':
                             iteration=args.est_refine_iter)
         print('run_live_demo: initial pose registered')
 
-        if debug >= 3:
-          # Extra diagnostics dump the aligned model and observed scene for
-          # offline inspection when the debug level is high enough.
-          print('run_live_demo: writing high-debug registration artifacts')
-          m = mesh.copy()
-          m.apply_transform(pose)
-          m.export(f'{debug_dir}/model_tf.obj')
-          xyz_map = depth2xyzmap(depth, cam_K)
-          valid = depth >= 0.1
-          pcd = toOpen3dCloud(xyz_map[valid], color[valid])
-          o3d.io.write_point_cloud(f'{debug_dir}/scene_complete.ply', pcd)
 
       else:
         # After initialization, either track frame-to-frame or -- when the
@@ -568,6 +590,31 @@ if __name__=='__main__':
           pose = est.track_one(rgb=masked_color, depth=masked_depth, K=cam_K,
                                iteration=args.track_refine_iter)
         print('run_live_demo: pose obtained')
+
+      # Remove unobservable lemon spin before rendering, saving or publishing.
+      if args.system == 'lemon':
+        reference_pose = camera_T_object if prev_pose is None else prev_pose
+        pose = stabilize_x_spin(pose, reference_pose, est.model_center)
+        # FoundationPose's internal pose places the centered mesh in the camera.
+        centered_pose = pose.copy()
+        centered_pose[:3, 3] += pose[:3, :3] @ est.model_center
+        est.pose_last = torch.as_tensor(
+            centered_pose, dtype=est.pose_last.dtype,
+            device=est.pose_last.device).reshape(est.pose_last.shape)
+
+      if i == 0:
+        if debug >= 3:
+          # Extra diagnostics dump the aligned model and observed scene for
+          # offline inspection when the debug level is high enough.
+          print('run_live_demo: writing high-debug registration artifacts')
+          m = mesh.copy()
+          m.apply_transform(pose)
+          m.export(f'{debug_dir}/model_tf.obj')
+          xyz_map = depth2xyzmap(depth, cam_K)
+          valid = depth >= 0.1
+          pcd = toOpen3dCloud(xyz_map[valid], color[valid])
+          o3d.io.write_point_cloud(f'{debug_dir}/scene_complete.ply', pcd)
+
 
       # --- Post-estimate bookkeeping shared by both paths -------------------
       # Render the object at the *current* estimate: silhouette feeds next

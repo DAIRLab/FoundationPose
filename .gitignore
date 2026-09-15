@@ -14,6 +14,8 @@ build/
 develop-eggs/
 *.zip
 demo_data/*
+!demo_data/lemon.obj
+!demo_data/sailboat.obj
 dist/
 # *.png
 mask.png

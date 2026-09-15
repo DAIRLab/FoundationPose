@@ -10,6 +10,29 @@ about-axis jitter seen in the logs.
 import numpy as np
 
 
+def stabilize_x_spin(pose, reference_pose, model_center):
+    """Choose the closest X-symmetric pose to a reference (original CAD frame).
+
+    Preserve the camera-frame mesh center and local X direction. Only spin
+    about centered CAD X changes; the original CAD origin may consequently
+    move. At an antiparallel-axis tie, leave the estimated spin unchanged.
+    """
+    corrected = np.array(pose, dtype=np.float64, copy=True)
+    rotation = corrected[:3, :3].copy()
+    center = np.asarray(model_center, dtype=np.float64)
+    relative = np.asarray(reference_pose)[:3, :3].T @ rotation
+    sine = relative[1, 2] - relative[2, 1]
+    cosine = relative[1, 1] + relative[2, 2]
+    if np.hypot(sine, cosine) < 1e-10:
+        return corrected
+    angle = np.arctan2(sine, cosine)
+    c, s = np.cos(angle), np.sin(angle)
+    spin = np.array([[1., 0., 0.], [0., c, -s], [0., s, c]])
+    corrected[:3, :3] = rotation @ spin
+    corrected[:3, 3] += (rotation - corrected[:3, :3]) @ center
+    return corrected
+
+
 def make_symmetry_tfs(symmetry_count: int, axis=(1.0, 0.0, 0.0)) -> np.ndarray:
     """Return an ``(N, 4, 4)`` stack of rotations by ``2*pi*k/N`` about ``axis``.
 
