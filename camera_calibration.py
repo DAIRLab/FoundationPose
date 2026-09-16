@@ -33,11 +33,24 @@ SHOW_INTRINSICS = True
 RECORD_RGBD_IMAGE = True
 
 
-# Hard-coded world position in the board frame.
-BOARD_T_WORLD = np.array([[-1, 0, 0, 0.351],
-                          [0, 0, 1, -0.015],
-                          [0, 1, 0, -0.497],
-                          [0, 0, 0, 1]])
+## Hard-coded world position in the board frame.
+# For the board held in the back of the printer.
+# BOARD_T_WORLD = np.array([[-1, 0, 0, 0.351],
+#                           [0, 0, 1, -0.015],
+#                           [0, 1, 0, -0.497],
+#                           [0, 0, 0, 1]])
+# For the board held on the build plate.
+BOARD_T_WORLD = np.array([[-1, 0,  0,  0.380],
+                          [ 0, 1,  0, -0.015],
+                          [ 0, 0, -1,  0.006],
+                          [ 0, 0,  0,  1]])
+
+# World points to draw in the debug image.
+WORLD_POINTS = np.array([[0.0, 0.0, 0.0],       # world origin
+                         [0.02, 0.015, 0.006],  # bottom left corner of checker
+                         [0.02, 0.285, 0.006],  # top left corner of checker
+                         [0.38, 0.285, 0.006],  # top right corner of checker
+                         [0.38, 0.015, 0.006]]) # bottom right corner of checker
 
 # directories for saving calibration products
 TIMESTAMP = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
@@ -136,6 +149,21 @@ if COMPUTE_EXTRINSICS:
         #C_T_P[:3, 3:],
         #0.08
     #)
+
+    # Project the known world points into the image and mark them.
+    W_rvec, _ = cv2.Rodrigues(C_T_W[:3, :3])
+    image_points, _ = cv2.projectPoints(
+        WORLD_POINTS, W_rvec, C_T_W[:3, 3:], camera_matrix,
+        distortion_coefficients)
+    image_points = image_points.reshape(-1, 2).astype(int)
+    for i, (u, v) in enumerate(image_points):
+        cv2.circle(image_debug_viz, (u, v), 4, (255, 0, 255), -1)
+        cv2.putText(image_debug_viz, str(i), (u + 6, v - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
+    # Outline the checker by connecting its four corners.
+    cv2.polylines(image_debug_viz, [image_points[1:].reshape(-1, 1, 2)],
+                  isClosed=True, color=(255, 0, 255), thickness=1)
+
     # Show the debug image in window.
     plt.imshow(image_debug_viz[:, :, ::-1])
     plt.savefig(get_filepath('debug_image.png'), dpi=300)
@@ -326,7 +354,6 @@ if RECORD_RGBD_IMAGE:
     plt.show()
     plt.close()
 
-
 if SHOW_INTRINSICS:
     pipeline = rs.pipeline()
     config = rs.config()
@@ -393,7 +420,3 @@ if SHOW_INTRINSICS:
     print(f'\nunaligned_depth_intrin_dict:')
     for key, val in unaligned_depth_intrin_dict.items():
         print(f'{key}: {val}')
-
-
-
-breakpoint()
