@@ -59,7 +59,6 @@ CODE_DIR = op.dirname(op.abspath(__file__))
 OBJECT_MESH_FILES = {
     'cone': 'cone.obj',
     'sailboat': 'sailboat.obj',
-    'pinecone': 'pinecone.obj',
     'lemon': 'lemon.obj',
 }
 
@@ -213,10 +212,8 @@ if __name__=='__main__':
         f'Mesh file for --system {args.system!r} not found: {mesh_file}')
   print('run_live_demo: loading mesh')
   mesh = trimesh.load(mesh_file, force='mesh')
-  # Lemon and sailboat are already in meters; other exports use millimeters.
-  mesh_scale = 1.0 if args.system in ('lemon', 'sailboat') else 0.001
-  mesh.apply_scale(mesh_scale)
-  print(f'run_live_demo: mesh scale to meters={mesh_scale}')
+  # All selectable meshes use metres, matching camera depth and world poses.
+  print('run_live_demo: mesh units=metres')
   print("LOADED MESH FILE")
 
   debug = args.debug

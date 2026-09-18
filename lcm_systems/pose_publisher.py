@@ -18,7 +18,6 @@ class PosePublisher:
             'cube': 'cube',
             'cone': 'cone',
             'sailboat': 'sailboat',
-            'pinecone': 'pinecone',
             'lemon': 'lemon',
         }
         if system_name not in prefixes:
