@@ -166,3 +166,6 @@ logs/
 run_used.yml
 
 *.run
+
+# Recorded confidence measurements
+/analysis/confidence/

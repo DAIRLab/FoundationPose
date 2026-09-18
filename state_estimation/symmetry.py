@@ -17,19 +17,19 @@ def stabilize_x_spin(pose, reference_pose, model_center):
     about centered CAD X changes; the original CAD origin may consequently
     move. At an antiparallel-axis tie, leave the estimated spin unchanged.
     """
-    corrected = np.array(pose, dtype=np.float64, copy=True)
+    corrected = np.array(pose, dtype=np.float64, copy=True) # seperate copy of estimated pose
     rotation = corrected[:3, :3].copy()
     center = np.asarray(model_center, dtype=np.float64)
-    relative = np.asarray(reference_pose)[:3, :3].T @ rotation
-    sine = relative[1, 2] - relative[2, 1]
-    cosine = relative[1, 1] + relative[2, 2]
+    relative = np.asarray(reference_pose)[:3, :3].T @ rotation # extract the relative rotation between the reference and the estimated pose
+    sine = relative[1, 2] - relative[2, 1] # compute the sine of the angle between the reference and estimated pose
+    cosine = relative[1, 1] + relative[2, 2] 
     if np.hypot(sine, cosine) < 1e-10:
         return corrected
-    angle = np.arctan2(sine, cosine)
+    angle = np.arctan2(sine, cosine) # compute the angle between the reference and estimated pose
     c, s = np.cos(angle), np.sin(angle)
     spin = np.array([[1., 0., 0.], [0., c, -s], [0., s, c]])
     corrected[:3, :3] = rotation @ spin
-    corrected[:3, 3] += (rotation - corrected[:3, :3]) @ center
+    corrected[:3, 3] += (rotation - corrected[:3, :3]) @ center # compute the translation to keep the mesh center in the same camera-frame position
     return corrected
 
 
